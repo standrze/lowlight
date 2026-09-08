@@ -2,7 +2,7 @@
 """Local-only terminal integration test.
 
 Usage: python3 scripts/terminal-smoke.py /absolute/path/to/lowlight
-Requires macOS, Python 3, and a built lowlight executable. Uses an ephemeral
+Requires macOS or Linux, Python 3, and a built lowlight executable. Uses an ephemeral
 loopback endpoint and temporary sessions/files; never connects to a real model.
 """
 import os, pty, select, time, subprocess, tempfile, pathlib, threading, json, struct, fcntl, termios, http.server, sys
@@ -10,6 +10,7 @@ root = pathlib.Path(tempfile.mkdtemp(prefix='lowlight-smoke-'))
 sessions = root/'sessions'; sessions.mkdir()
 file = root/'notes with spaces.txt'; file.write_text('attachment snapshot 2468\nsecond line\n')
 requests=[]
+streaming_content_sent=threading.Event(); allow_stream_finish=threading.Event()
 class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*args): pass
  def do_GET(self):
@@ -22,6 +23,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
   events=[{'choices':[{'index':0,'delta':{'reasoning_content':'Checking the provided text.'}}]}, {'choices':[{'index':0,'delta':{'content':'Answer number %d with needle.'%len(requests)}}]}, {'choices':[{'index':0,'delta':{},'finish_reason':'stop'}]}]
   for ev in events:
    self.wfile.write(('data: '+json.dumps(ev)+'\n\n').encode());self.wfile.flush();time.sleep(.03)
+   if len(requests)==1 and 'content' in ev['choices'][0]['delta']:
+    streaming_content_sent.set();allow_stream_finish.wait(timeout=10)
   self.wfile.write(b'data: [DONE]\n\n');self.wfile.flush()
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
 threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -59,7 +62,9 @@ try:
  output=command(master,'/attach "notes with spaces.txt"')
  check('2468' in output,'attachment preview is visible')
  check(not requests,'preview does not send a model request')
- command(master,'Summarize this attachment',1)
+ output=command(master,'Summarize this attachment',1)
+ check(streaming_content_sent.is_set() and not allow_stream_finish.is_set() and 'needle' in output,'answer streams before the HTTP response finishes')
+ allow_stream_finish.set();read(master,.6)
  check(len(requests)==1,'message reaches endpoint once')
  check('attachment snapshot 2468' in requests[0]['messages'][-1]['content'],'attachment is included in model input')
  original=latest(); original_id=original['id']

@@ -64,3 +64,13 @@ import Testing
     #expect(block.last?.text == "Heading")
     #expect(block.last?.bold == true)
 }
+
+@Test func sseLinesPreserveUTF8AcrossNetworkChunksAndFinalUnterminatedLine() {
+    let text = "data: {\"text\":\"月◒\"}\r\n\ndata: [DONE]"
+    var buffer = SSELineBuffer()
+    var lines: [String] = []
+    for byte in text.utf8 { lines += buffer.append(Data([byte])) }
+    #expect(lines == ["data: {\"text\":\"月◒\"}\r", ""])
+    #expect(buffer.finish() == ["data: [DONE]"])
+    #expect(buffer.finish().isEmpty)
+}

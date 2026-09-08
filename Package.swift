@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "ModelTransport", targets: ["ModelTransport"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/swiftlang/swift-markdown.git", exact: "0.8.0"),
         .package(
             url: "https://github.com/SwiftTUI/swift-tui",
             exact: "0.9.7"
@@ -20,7 +21,10 @@ let package = Package(
         .target(name: "ModelTransport"),
         .target(
             name: "ModelChatCore",
-            dependencies: ["ModelTransport"]
+            dependencies: [
+                "ModelTransport",
+                .product(name: "Markdown", package: "swift-markdown", condition: .when(platforms: [.linux])),
+            ]
         ),
         .executableTarget(
             name: "lowlight",

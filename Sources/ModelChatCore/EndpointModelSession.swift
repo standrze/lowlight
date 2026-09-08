@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import ModelTransport
 
 public struct UsageSnapshot: Equatable, Sendable {
@@ -390,34 +393,52 @@ public actor EndpointModelSession {
         request.httpBody = try JSONEncoder().encode(payload)
 
         do {
-            let (bytes, response) = try await urlSession.bytes(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw EndpointSessionError.invalidResponse
-            }
-            guard (200..<300).contains(httpResponse.statusCode) else {
-                var body = Data()
-                for try await byte in bytes {
-                    body.append(byte)
-                    if body.count >= 8_192 { break }
-                }
-                if let envelope = try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: body) {
-                    throw EndpointSessionError.server("HTTP \(httpResponse.statusCode): \(envelope.error.message)")
-                }
-                throw EndpointSessionError.httpStatus(httpResponse.statusCode)
+            let transport = HTTPResponseStream(request: request, configuration: urlSession.configuration)
+            defer { transport.cancel() }
+            var status: Int?
+            var errorBody = Data()
+            var lines = SSELineBuffer()
+            var streamState = OpenAIStreamState()
+            var sawDone = false
+
+            func consume(_ line: String, isolation: isolated (any Actor)? = #isolation) async throws -> Bool {
+                try Task.checkCancellation()
+                guard let dataString = Self.sseData(from: line) else { return false }
+                let chunks = try streamState.consume(dataString)
+                for reasoning in streamState.reasoningChunks { await onReasoning(reasoning) }
+                for content in chunks { await onChunk(content) }
+                return dataString == "[DONE]"
             }
 
-            var streamState = OpenAIStreamState()
-            for try await line in bytes.lines {
+            events: for try await event in transport.events {
                 try Task.checkCancellation()
-                guard let dataString = Self.sseData(from: line) else { continue }
-                let chunks = try streamState.consume(dataString)
-                for reasoning in streamState.reasoningChunks {
-                    await onReasoning(reasoning)
+                switch event {
+                case .response(let response):
+                    status = response.statusCode
+                case .data(let data):
+                    guard let status else { throw EndpointSessionError.invalidResponse }
+                    if !(200..<300).contains(status) {
+                        errorBody.append(data.prefix(8_192 - errorBody.count))
+                        if errorBody.count == 8_192 { break events }
+                    } else {
+                        for line in lines.append(data) {
+                            if try await consume(line) { sawDone = true; break events }
+                        }
+                    }
                 }
-                for content in chunks {
-                    await onChunk(content)
+            }
+            try Task.checkCancellation()
+            guard let status else { throw EndpointSessionError.invalidResponse }
+            guard (200..<300).contains(status) else {
+                if let envelope = try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: errorBody) {
+                    throw EndpointSessionError.server("HTTP \(status): \(envelope.error.message)")
                 }
-                if dataString == "[DONE]" { break }
+                throw EndpointSessionError.httpStatus(status)
+            }
+            if !sawDone {
+                for line in lines.finish() {
+                    if try await consume(line) { break }
+                }
             }
 
             try Task.checkCancellation()

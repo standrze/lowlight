@@ -256,7 +256,7 @@ func multipleSessionHomesPreferCurrentSnapshotsAndSaveResumedChatsInLowlight() t
 
         recent.title = "Saved in lowlight"
         let newURL = try combined.save(recent)
-        #expect(newURL.deletingLastPathComponent() == lowlight.standardizedFileURL)
+        #expect(newURL.deletingLastPathComponent().path == lowlight.standardizedFileURL.path)
         #expect(try combined.load(recent.id.uuidString) == recent)
         #expect(try Data(contentsOf: oldURL) == oldBytes)
 

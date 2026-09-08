@@ -18,23 +18,54 @@ The interface uses a compact `◒ lowlight` header, light cyan and blue accents,
 
 lowlight connects to a separately managed model server. Skills provide instructions; the client does not execute them or run tools, MCP servers, or a REPL.
 
-## Install
+## Install a release
 
-Requires macOS 15 or newer, a Swift 6.3 or newer toolchain, and an OpenAI-compatible model endpoint.
+The first prerelease is **v0.1.0-alpha.1**, with builds for:
+
+| Download | Target |
+| --- | --- |
+| `macos-arm64` | Apple silicon, macOS 15 or newer |
+| `linux-x86_64` | x86_64 Linux, Ubuntu 24.04 or a compatible distribution |
+
+The release bundles include the Swift runtime where needed; a Swift compiler is not required. Linux needs its system curl, TLS, and C/C++ runtime libraries. On Ubuntu 24.04, install missing runtime dependencies with `sudo apt-get install ca-certificates libcurl4t64 libstdc++6 libatomic1`.
+
+This repository is private. Install [GitHub CLI](https://cli.github.com), sign in with `gh auth login`, then run this one line:
+
+```sh
+(set -o pipefail; gh api 'repos/standrze/lowlight/contents/scripts/install-release.sh?ref=v0.1.0-alpha.1' -H 'Accept: application/vnd.github.raw' | bash)
+```
+
+The installer detects your OS and architecture, downloads the matching release, verifies SHA-256, and installs into `~/.lowlight`. It adds `~/.lowlight/bin` to `.zshrc` or `.bashrc`, keeping a backup before editing. Open a new terminal and run `lowlight`.
+
+```text
+~/.lowlight/
+  bin/lowlight     Stable launcher
+  lib/            Installed executable, resources, and bundled runtime
+  sessions/chat/  Saved conversations
+  logs/           Application logs
+```
+
+Alternatively, download and extract the appropriate `.tar.gz` from [Releases](https://github.com/standrze/lowlight/releases), then run `./install.sh` inside the extracted folder. The offline installer does not edit shell configuration. Add `export PATH="$HOME/.lowlight/bin:$PATH"` yourself in that case. `--prefix PATH` changes the installation location; `--sessions-directory PATH` changes conversation storage.
+
+These are early builds. The macOS binary is ad-hoc signed, not Apple-notarized. Intel Macs, Linux ARM64, and Alpine/musl are not included in this release.
+
+## Build from source
+
+Requires a Swift 6.3 or newer toolchain and the platform's development libraries.
 
 ```sh
 git clone https://github.com/standrze/lowlight.git
 cd lowlight
-./install.sh
+./install.sh --configuration release
 ```
 
-Add the command to your shell PATH. For zsh, add this line to `~/.zshrc`, then open a new terminal or run `source ~/.zshrc`:
+The source installer does not change your shell configuration. Add this line to `~/.zshrc` or `~/.bashrc`, then open a new terminal:
 
 ```sh
 export PATH="$HOME/.lowlight/bin:$PATH"
 ```
 
-The installer puts the launcher in `~/.lowlight/bin` and the executable and resources under `~/.lowlight/lib/lowlight`. It does not change your shell configuration. Source stays in your checkout. Recognized older lowlight launchers forward to the new installation.
+Source stays in your checkout. Recognized older lowlight launchers forward to the new installation. An OpenAI-compatible model endpoint is required for chat.
 
 ## Start a conversation
 

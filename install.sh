@@ -6,7 +6,8 @@ usage() {
 Usage: ./install.sh [--configuration debug|release] [--prefix PATH]
        ./install.sh --binary PATH [--prefix PATH]
 
-Build and install lowlight without moving its source project.
+Install a release bundle, or build and install from a source checkout.
+Release bundles install without a Swift toolchain.
 
   --configuration NAME  Swift build configuration (default: debug).
   --binary PATH         Install a prebuilt executable without building.
@@ -37,7 +38,30 @@ fail() {
   exit 1
 }
 
+replace_path() {
+  case "$(uname -s)" in
+    Darwin) mv -fh "$@" ;;
+    Linux) mv -fT "$@" ;;
+    *) fail 'supported platforms are macOS and Linux' ;;
+  esac
+}
+
 write_launcher() {
+  cat <<'LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+LAUNCHER_DIRECTORY="$(CDPATH= cd "$(dirname "$0")" && pwd -P)"
+APP_DIRECTORY="$(CDPATH= cd "$LAUNCHER_DIRECTORY/../lib/lowlight" && pwd -P)"
+export LOWLIGHT_WORKSPACE="${LOWLIGHT_WORKSPACE:-${MIDNIGHT_WORKSPACE:-$PWD}}"
+export MIDNIGHT_WORKSPACE="${MIDNIGHT_WORKSPACE:-$LOWLIGHT_WORKSPACE}"
+if [[ -d "$APP_DIRECTORY/runtime" ]]; then
+  export LD_LIBRARY_PATH="$APP_DIRECTORY/runtime${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+exec "$APP_DIRECTORY/lowlight" "$@"
+LAUNCHER
+}
+
+write_previous_lowlight_launcher() {
   cat <<'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -124,6 +148,9 @@ case "$CONFIGURATION" in
   debug|release) ;;
   *) fail '--configuration must be debug or release' ;;
 esac
+if [[ -z "$BINARY" && -x "$PACKAGE_ROOT/payload/lowlight" ]]; then
+  BINARY="$PACKAGE_ROOT/payload/lowlight"
+fi
 if [[ -n "$BINARY" ]]; then
   [[ "$CONFIGURATION_SET" == false ]] || fail '--binary cannot be combined with --configuration'
 else
@@ -135,7 +162,8 @@ fi
 [[ -f "$BINARY" && -x "$BINARY" ]] || fail "executable not found: $BINARY"
 BINARY_DIRECTORY="$(CDPATH= cd "$(dirname "$BINARY")" && pwd -P)"
 BINARY="$BINARY_DIRECTORY/$(basename "$BINARY")"
-[[ -d "$BINARY_DIRECTORY/swift-tui_SwiftTUIWebHost.bundle" ]] || fail 'missing swift-tui_SwiftTUIWebHost.bundle beside the executable'
+[[ -d "$BINARY_DIRECTORY/swift-tui_SwiftTUIWebHost.bundle" ||
+   -d "$BINARY_DIRECTORY/swift-tui_SwiftTUIWebHost.resources" ]] || fail 'missing SwiftTUI resources beside the executable'
 
 umask 077
 mkdir -p "$PREFIX"
@@ -173,17 +201,22 @@ elif [[ -e "$APP_LINK" ]]; then
 fi
 if [[ -e "$PREFIX/bin/lowlight" || -L "$PREFIX/bin/lowlight" ]]; then
   [[ -f "$PREFIX/bin/lowlight" && ! -L "$PREFIX/bin/lowlight" ]] &&
-    cmp -s "$PREFIX/bin/lowlight" <(write_launcher) ||
+    (cmp -s "$PREFIX/bin/lowlight" <(write_launcher) ||
+     cmp -s "$PREFIX/bin/lowlight" <(write_previous_lowlight_launcher)) ||
     fail "refusing to replace an unmanaged command: $PREFIX/bin/lowlight"
 fi
 
 mkdir -p "$PREFIX/lib/.lowlight-versions"
 STAGED_DIRECTORY="$(mktemp -d "$PREFIX/lib/.lowlight-versions/install.XXXXXXXX")"
 install -m 755 "$BINARY" "$STAGED_DIRECTORY/lowlight"
-for RESOURCE_BUNDLE in "$BINARY_DIRECTORY"/*.bundle; do
+for RESOURCE_BUNDLE in "$BINARY_DIRECTORY"/*.bundle "$BINARY_DIRECTORY"/*.resources; do
   [[ -d "$RESOURCE_BUNDLE" ]] || continue
   cp -R "$RESOURCE_BUNDLE" "$STAGED_DIRECTORY/"
 done
+
+if [[ -d "$BINARY_DIRECTORY/runtime" ]]; then
+  cp -R "$BINARY_DIRECTORY/runtime" "$STAGED_DIRECTORY/"
+fi
 
 LAUNCHER_TEMP="$(mktemp "$PREFIX/bin/.lowlight.XXXXXXXX")"
 write_launcher > "$LAUNCHER_TEMP"
@@ -191,11 +224,11 @@ chmod 755 "$LAUNCHER_TEMP"
 
 APP_LINK_TEMP="$PREFIX/lib/.lowlight-link.$(basename "$STAGED_DIRECTORY")"
 ln -s ".lowlight-versions/$(basename "$STAGED_DIRECTORY")" "$APP_LINK_TEMP"
-# macOS mv -h replaces the destination symlink instead of following it.
-mv -fh "$APP_LINK_TEMP" "$APP_LINK"
+# Replace the destination symlink itself on both macOS and Linux.
+replace_path "$APP_LINK_TEMP" "$APP_LINK"
 APP_LINK_TEMP=
 PUBLISHED=true
-mv -fh "$LAUNCHER_TEMP" "$PREFIX/bin/lowlight"
+replace_path "$LAUNCHER_TEMP" "$PREFIX/bin/lowlight"
 LAUNCHER_TEMP=
 
 for LEGACY_NAME in midnight midnight-chat; do
@@ -203,7 +236,7 @@ for LEGACY_NAME in midnight midnight-chat; do
     COMPAT_LAUNCHER_TEMP="$(mktemp "$PREFIX/bin/.$LEGACY_NAME.XXXXXXXX")"
     write_compat_launcher > "$COMPAT_LAUNCHER_TEMP"
     chmod 755 "$COMPAT_LAUNCHER_TEMP"
-    mv -fh "$COMPAT_LAUNCHER_TEMP" "$PREFIX/bin/$LEGACY_NAME"
+    replace_path "$COMPAT_LAUNCHER_TEMP" "$PREFIX/bin/$LEGACY_NAME"
     COMPAT_LAUNCHER_TEMP=
     printf 'Updated previous chat command: %s\n' "$PREFIX/bin/$LEGACY_NAME"
   fi
@@ -215,11 +248,12 @@ if [[ "$PREFIX_SET" == false ]]; then
   PREVIOUS_LAUNCHER="$HOME/.midnight/bin/lowlight"
   if [[ -f "$PREVIOUS_LAUNCHER" && ! -L "$PREVIOUS_LAUNCHER" &&
         ! "$PREVIOUS_LAUNCHER" -ef "$PREFIX/bin/lowlight" ]] &&
-      cmp -s "$PREVIOUS_LAUNCHER" <(write_launcher); then
+      (cmp -s "$PREVIOUS_LAUNCHER" <(write_launcher) ||
+       cmp -s "$PREVIOUS_LAUNCHER" <(write_previous_lowlight_launcher)); then
     COMPAT_LAUNCHER_TEMP="$(mktemp "$HOME/.midnight/bin/.lowlight.XXXXXXXX")"
     write_previous_home_launcher > "$COMPAT_LAUNCHER_TEMP"
     chmod 755 "$COMPAT_LAUNCHER_TEMP"
-    mv -fh "$COMPAT_LAUNCHER_TEMP" "$PREVIOUS_LAUNCHER"
+    replace_path "$COMPAT_LAUNCHER_TEMP" "$PREVIOUS_LAUNCHER"
     COMPAT_LAUNCHER_TEMP=
     printf 'Updated previous lowlight command: %s\n' "$PREVIOUS_LAUNCHER"
   fi
@@ -227,3 +261,7 @@ fi
 
 printf 'Installed lowlight: %s\n' "$PREFIX/lib/lowlight/lowlight"
 printf 'Launch from any workspace: %s\n' "$PREFIX/bin/lowlight"
+case ":$PATH:" in
+  *":$PREFIX/bin:"*) ;;
+  *) printf 'Add this directory to your shell PATH: %s\n' "$PREFIX/bin" ;;
+esac

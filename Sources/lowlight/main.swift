@@ -113,7 +113,8 @@ private enum SlashCommand: String, CaseIterable, Identifiable, Sendable {
 struct LowlightApp: App, SwiftTUICommand {
     nonisolated static let configuration = CommandConfiguration(
         commandName: "lowlight",
-        abstract: "lowlight — a terminal for your models."
+        abstract: "lowlight — a terminal for your models.",
+        version: "0.1.0-alpha.1"
     )
 
     @OptionGroup(title: "SwiftTUI Options")
