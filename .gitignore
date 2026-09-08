@@ -1,0 +1,22 @@
+# Swift build products and local IDE state
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Local settings, credentials, and runtime data
+.env
+.env.*
+!.env.example
+model-stack.local.json
+.lowlight/
+.midnight/
+tts-output/
+*.log
+
+# Python test cache
+__pycache__/
+*.pyc

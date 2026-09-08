@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">lowlight monochrome mark</title>
+  <desc id="desc">A circle with its lower half filled.</desc>
+  <g fill="currentColor" stroke="currentColor" style="color:#30343E">
+    <path d="M10 32H54A22 22 0 0 1 10 32Z" stroke="none"/>
+    <circle cx="32" cy="32" r="22" fill="none" stroke-width="4"/>
+  </g>
+</svg>
