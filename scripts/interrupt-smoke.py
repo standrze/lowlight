@@ -24,7 +24,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b'{"data":[{"id":"test","context_window":4096}]}')
+        self.wfile.write(b'{"data":[{"id":"test","context_window":4096,"supported_reasoning_efforts":["low"]}]}')
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         started.set()
@@ -100,12 +100,13 @@ try:
         assert proc.wait(timeout=5)==0
         print(f'PASS {prompt}: stopped, preserved chat, and exited cleanly', flush=True)
     proc, master, sessions = launch('warnings', 8192)
+    send(master, b'/effort high\r', .6)
     send(master, b'hello', .6)
     for _ in range(3): send(master, b'\r', .3)
     send(master, b'\x04')
     assert proc.wait(timeout=5)==0
     saved = record(sessions)
-    warnings = [m for m in saved['transcript']['messages'] if 'exceeds the server-reported limit' in m['text']]
+    warnings = [m for m in saved['transcript']['messages'] if "does not advertise 'high' effort" in m['text']]
     assert len(warnings)==1, f'expected one warning, got {len(warnings)}'
     assert saved['draft']=='hello', 'blocked send lost the draft'
     print('PASS repeated blocked sends retain one warning and preserve draft', flush=True)

@@ -118,7 +118,7 @@ struct LowlightApp: App, SwiftTUICommand {
     @Option(name: .long, help: "Maximum tokens generated per response")
     var maxTokens: Int?
 
-    @Option(name: .long, help: "Model context-window size")
+    @Option(name: .long, help: "Fallback context-window size when the server does not advertise one")
     var contextWindow: Int?
 
     @Option(name: .long, help: "Directory for generated speech audio")
@@ -1095,6 +1095,9 @@ private struct ChatView: View {
                     catalog: catalog,
                     allowsFallback: allowsModelFallback
                 )
+                if let reportedWindow = modelCatalog.first(where: { $0.id == selectedModel })?.contextWindow {
+                    contextWindowTokens = reportedWindow
+                }
                 let connected = try EndpointModelSession(
                     model: selectedModel, endpoint: endpoint, apiKey: apiKey,
                     maximumTokens: maximumTokens, contextWindowTokens: contextWindowTokens,
@@ -1879,6 +1882,11 @@ private struct ChatView: View {
             endpoint = value
             requiresReconnect = true
         case "context-window":
+            if let reportedWindow = selectedModelInfo?.contextWindow {
+                clearComposer()
+                addCommandNotice("The server sets this model's context window to \(reportedWindow) tokens. Change it in the model runner, then use /connection reconnect.")
+                return
+            }
             guard let tokens = Int(value) else {
                 clearComposer()
                 addCommandNotice("Context window must be a whole number of tokens.")

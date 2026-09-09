@@ -37,7 +37,8 @@ if [[ "$PLATFORM" == linux-* ]]; then
   while IFS= read -r library; do
     [[ -f "$library" ]] && cp -L "$library" "$BUNDLE/payload/runtime/"
   done < <(ldd "$BUILD/lowlight" | awk '$3 ~ /\/lib\/swift\/linux\// {print $3}')
-  TOOLCHAIN_SHARE="$(dirname "$(dirname "$(command -v swift)")")/share/swift"
+  # Swiftly exposes a launcher, so discover the active toolchain from Swift itself.
+  TOOLCHAIN_SHARE="$(swift -print-target-info | python3 -c 'import json, sys; from pathlib import Path; print(Path(json.load(sys.stdin)["paths"]["runtimeResourcePath"]).parent.parent / "share/swift")')"
   cp "$TOOLCHAIN_SHARE/LICENSE.txt" "$BUNDLE/licenses/Swift-LICENSE.txt"
   [[ -f "$BUNDLE/payload/runtime/libswiftCore.so" ]] || { printf 'Swift runtime was not bundled\n' >&2; exit 1; }
 fi

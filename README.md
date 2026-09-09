@@ -167,7 +167,7 @@ lowlight --profile local
 
 Explicit startup flags override the profile; profile values override the settings file. Resuming a session restores its own settings and saved authentication-variable name (older sessions use the startup variable).
 
-`/model` opens the server's model picker. `/connection` shows endpoint, authentication-variable status, token reserves, and advertised capabilities; `/connection reconnect` refreshes the connection and model list. The client recognizes optional model-list metadata `context_window`, `context_length`, `max_model_len`, and `supported_reasoning_efforts`. Settings exceeding advertised limits block sending with a corrective message. Missing metadata is labeled unverified; it is not treated as proof of support. Configuring a larger client window does not increase the server/model's actual capacity.
+`/model` opens the server's model picker. `/connection` shows endpoint, authentication-variable status, token reserves, and advertised capabilities; `/connection reconnect` refreshes the connection and model list. The client recognizes optional model-list metadata `context_window`, `context_length`, `max_model_len`, and `supported_reasoning_efforts`. Lowlight automatically adopts the selected model’s advertised context window on connection and reconnect, including when resuming an older conversation. Set the window in Midnight Model Runner, then use `/connection reconnect` to pick up changes. Local context-window settings are fallbacks only for servers that omit this metadata. Unsupported reasoning effort blocks sending with a corrective message. Missing metadata is labeled unverified.
 
 ## System prompt and skills
 
@@ -267,7 +267,7 @@ New responses are instructed to use plain code and useful comments, without emoj
 /set context-window 32768
 ```
 
-Changing the model, endpoint, or context window reconnects while preserving the transcript, active context, and instructions. Usage totals restart for the new model session. `/usage` displays server-reported token counts when available through standard streaming usage reporting; it is a local command. Runner generation rates appear in the footer when supplied by the endpoint.
+Changing the model or endpoint reconnects while preserving the transcript, active context, and instructions. `/set context-window` is available for servers without context metadata; otherwise change the window in the runner and reconnect. Usage totals restart for the new model session. `/usage` displays server-reported token counts when available through standard streaming usage reporting; it is a local command. Runner generation rates appear in the footer when supplied by the endpoint.
 
 ## Text to speech
 

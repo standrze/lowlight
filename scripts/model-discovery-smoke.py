@@ -27,7 +27,7 @@ config = root / "config.json"
 config.write_text("{}\n")
 binary = str(pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".build/debug/lowlight").resolve())
 lock = threading.Lock()
-fixture = {"models": [], "status": 200, "scenario": "startup"}
+fixture = {"models": [], "status": 200, "scenario": "startup", "context": 4096}
 requests = []
 catalog_requests = []
 processes = []
@@ -42,9 +42,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with lock:
             status = fixture["status"] if self.path == "/v1/models" else 404
             models = list(fixture["models"])
+            context = fixture["context"]
             catalog_requests.append({"path": self.path, "scenario": fixture["scenario"], "status": status})
         payload = {"object": "list", "data": [
-            {"id": name, "object": "model", "owned_by": "midnight", "context_length": 8192}
+            {"id": name, "object": "model", "owned_by": "midnight", "context_length": context}
             for name in models
         ]} if status == 200 else {"error": {"message": "Route not found"}}
         self.send_response(status)
@@ -79,9 +80,9 @@ def check(value, message):
     print("PASS", message, flush=True)
 
 
-def configure(scenario, models=(), status=200):
+def configure(scenario, models=(), status=200, context=4096):
     with lock:
-        fixture.update(scenario=scenario, models=list(models), status=status)
+        fixture.update(scenario=scenario, models=list(models), status=status, context=context)
 
 
 def read(master, seconds=0.5):
@@ -184,16 +185,20 @@ try:
     original_id = latest(sessions)["id"]
     check(latest(sessions)["model"] == "active-first", "saved conversation records discovered model")
 
-    configure("reconnect", ["active-second"])
+    check(latest(sessions)["contextWindowTokens"] == 4096, "server context replaces configured 8192-token window")
+
+    configure("reconnect", ["active-second"], context=16384)
     before = len(catalog_requests)
     command(master, "/connection reconnect")
     wait_for(master, lambda: len(catalog_requests) > before, "reconnect refreshes the server model")
     prompt(master, "turn after reconnect", "active-second")
+    check(latest(sessions)["contextWindowTokens"] == 16384, "reconnect picks up increased server context")
     stop(proc, master)
 
     configure("resume", ["active-third"])
     proc, master, sessions = launch("automatic", resume=original_id)
     saved = latest(sessions)
+    check(saved["contextWindowTokens"] == 4096, "resume picks up decreased server context")
     check(saved["model"] == "active-third", "resume replaces unavailable saved model")
     contents = [message["text"] for message in saved["transcript"]["messages"]]
     check("discovery first turn" in contents and "turn after reconnect" in contents
