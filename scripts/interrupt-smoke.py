@@ -100,9 +100,13 @@ try:
         assert proc.wait(timeout=5)==0
         print(f'PASS {prompt}: stopped, preserved chat, and exited cleanly', flush=True)
     proc, master, sessions = launch('warnings', 8192)
-    send(master, b'/effort high\r', .6)
+    send(master, b'/effort high', .3)
+    send(master, b'\r', .6)
     send(master, b'hello', .6)
     for _ in range(3): send(master, b'\r', .3)
+    # Let draft autosave persist the final warning state before inspecting it.
+    send(master, b' ', .1)
+    send(master, b'\x7f', .7)
     send(master, b'\x04')
     assert proc.wait(timeout=5)==0
     saved = record(sessions)
