@@ -18,7 +18,6 @@ public actor EndpointModelSession {
     public nonisolated let endpoint: String
 
     private let chatURL: URL
-    private let modelsURL: URL
     private let speechURL: URL
     private let apiKey: String?
     private let maximumTokens: Int
@@ -53,7 +52,6 @@ public actor EndpointModelSession {
         self.modelPath = trimmedModel
         self.endpoint = endpoint
         self.chatURL = try OpenAIEndpoint.chatCompletionsURL(from: endpoint)
-        self.modelsURL = try OpenAIEndpoint.modelsURL(from: endpoint)
         self.speechURL = try OpenAIEndpoint.speechURL(from: endpoint)
         self.apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.maximumTokens = maximumTokens
@@ -199,11 +197,21 @@ public actor EndpointModelSession {
 
     public func modelCatalog() async throws -> [OpenAIModel] {
         guard !isShutdown else { throw EndpointSessionError.shutdown }
-        var request = URLRequest(url: modelsURL)
+        return try await Self.fetchModelCatalog(endpoint: endpoint, apiKey: apiKey, urlSession: urlSession)
+    }
+
+    /// Model discovery must not require inventing a model name for a session.
+    public static func fetchModelCatalog(
+        endpoint: String,
+        apiKey: String? = nil,
+        urlSession: URLSession = .shared
+    ) async throws -> [OpenAIModel] {
+        var request = URLRequest(url: try OpenAIEndpoint.modelsURL(from: endpoint))
         request.httpMethod = "GET"
         request.timeoutInterval = 15
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let apiKey, !apiKey.isEmpty {
+        if let apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 

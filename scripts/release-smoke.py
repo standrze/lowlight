@@ -12,7 +12,7 @@ import tempfile
 
 root = Path(__file__).resolve().parent.parent
 assets = Path(sys.argv[1]).resolve()
-version = 'v0.1.0-alpha.1'
+version = 'v0.1.0-beta.1'
 platform = 'macos-arm64' if sys.platform == 'darwin' else 'linux-x86_64'
 archive = assets / f'lowlight-{version}-{platform}.tar.gz'
 assert archive.is_file()

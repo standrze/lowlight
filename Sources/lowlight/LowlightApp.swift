@@ -3,28 +3,6 @@ import ModelChatCore
 import ModelTransport
 import SwiftTUI
 
-private enum LowlightPalette {
-    static let accent = Color(hexRGB: 0x7DE3D3)
-    static let blue = Color(hexRGB: 0x5289E6)
-    static let ink = Color(hexRGB: 0x30343E)
-    static let muted = Color(hexRGB: 0x788398)
-    static let border = Color(hexRGB: 0xA7AFBE)
-    static let detailAccent = accent
-    static let danger = Color(hexRGB: 0xBD4E40)
-    static let appearance = TerminalAppearance(
-        foregroundColor: ink, backgroundColor: .white, tintColor: accent
-    )
-}
-
-
-/// A single text cell, with an ASCII fallback for terminals that request it.
-private enum LowlightBrand {
-    static var mark: String {
-        let ascii = ProcessInfo.processInfo.environment["SWIFTTUI_ASCII"] ?? "0"
-        return CommandLine.arguments.contains("--ascii") || (!ascii.isEmpty && ascii != "0") ? "_" : "◒"
-    }
-}
-
 private enum SlashCommand: String, CaseIterable, Identifiable, Sendable {
     case clear = "/clear"
     case context = "/context"
@@ -50,6 +28,7 @@ private enum SlashCommand: String, CaseIterable, Identifiable, Sendable {
     case export = "/export"
     case profile = "/profile"
     case connection = "/connection"
+    case home = "/home"
 
     var id: String { rawValue }
     var name: String { rawValue }
@@ -75,7 +54,7 @@ private enum SlashCommand: String, CaseIterable, Identifiable, Sendable {
         case .export: "/export PATH"
         case .profile: "/profile [save NAME|use NAME]"
         case .connection: "/connection [reconnect]"
-        case .clear, .context, .help, .quit, .usage: rawValue
+        case .clear, .context, .help, .home, .quit, .usage: rawValue
         }
     }
 
@@ -84,6 +63,7 @@ private enum SlashCommand: String, CaseIterable, Identifiable, Sendable {
         case .clear: "Clear conversation"
         case .context: "Show context usage"
         case .help: "Show commands and keyboard shortcuts"
+        case .home: "Open the screen navigator"
         case .model: "Select another model"
         case .mode: "Switch between chat and text-to-speech"
         case .quit: "Save and exit lowlight"
@@ -114,7 +94,7 @@ struct LowlightApp: App, SwiftTUICommand {
     nonisolated static let configuration = CommandConfiguration(
         commandName: "lowlight",
         abstract: "lowlight — a terminal for your models.",
-        version: "0.1.0-alpha.1"
+        version: "0.1.0-beta.1"
     )
 
     @OptionGroup(title: "SwiftTUI Options")
@@ -126,13 +106,13 @@ struct LowlightApp: App, SwiftTUICommand {
     @Option(name: .shortAndLong, help: "OpenAI-compatible base URL")
     var endpoint: String?
 
-    @Option(name: .long, help: "Named connection profile from ~/.midnight/profiles")
+    @Option(name: .long, help: "Named connection profile from ~/.lowlight/config/profiles")
     var profile: String?
 
     @Option(name: .long, help: "Environment variable containing a bearer token")
     var apiKeyEnv: String?
 
-    @Option(name: .shortAndLong, help: "Path to model-stack settings JSON")
+    @Option(name: .shortAndLong, help: "Settings JSON (default: ~/.lowlight/config/settings.json)")
     var config: String?
 
     @Option(name: .long, help: "Maximum tokens generated per response")
@@ -173,6 +153,7 @@ struct LowlightApp: App, SwiftTUICommand {
         WindowGroup("lowlight") {
             ChatView(
                 initialModel: settings.model,
+                allowsModelFallback: model == nil && profile == nil,
                 endpoint: settings.endpoint,
                 apiKeyEnvironment: settings.apiKeyEnvironment,
                 initialEffort: settings.reasoningEffort,
@@ -226,7 +207,7 @@ struct LowlightApp: App, SwiftTUICommand {
         do { try validateChatEndpoint(resolvedEndpoint) }
         catch { startupError = error.localizedDescription }
         return ResolvedChatSettings(
-            model: model ?? selectedProfile?.model ?? fileSettings?.chat?.model ?? "gemma-4-e2b-it-4bit",
+            model: model ?? selectedProfile?.model ?? fileSettings?.chat?.model ?? "",
             endpoint: resolvedEndpoint,
             apiKeyEnvironment: apiKeyEnv
                 ?? selectedProfile?.apiKeyEnvironment
@@ -249,7 +230,7 @@ struct LowlightApp: App, SwiftTUICommand {
             systemPrompt: prompt,
             audioOutputDirectory: audioOutputDirectory
                 ?? fileSettings?.chat?.audioOutputDirectory
-                ?? "tts-output",
+                ?? "~/.lowlight/tts",
             startupError: startupError,
             reasoningEffort: selectedProfile?.reasoningEffort
         )
@@ -273,8 +254,11 @@ private struct ResolvedChatSettings {
 
 @MainActor
 private struct ChatView: View {
+    @Environment(\.terminalAppearance) private var terminalAppearance
+    private var palette: LowlightPalette { LowlightPalette(appearance: terminalAppearance) }
+
     private static let slashCommands: [SlashCommand] = [
-        .model, .effort, .system, .skills, .resume, .sessions, .new, .save,
+        .home, .model, .effort, .system, .skills, .resume, .sessions, .new, .save,
         .attach, .retry, .edit, .branch, .search, .export, .profile, .connection,
         .compact, .context, .usage, .set, .mode, .clear, .help, .quit
     ]
@@ -287,10 +271,48 @@ private struct ChatView: View {
         var label: String { rawValue.uppercased() }
     }
 
+    private enum AgentScreen: Equatable {
+        case chat
+        case help
+        case navigator
+        case sessions
+    }
+
+    private enum NavigatorDestination: String, CaseIterable, Identifiable {
+        case chat
+        case sessions
+        case models
+        case skills
+        case help
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .chat: "Chat"
+            case .sessions: "Chats"
+            case .models: "Models"
+            case .skills: "Skills"
+            case .help: "Help"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .chat: "Return to the active conversation"
+            case .sessions: "Switch between saved conversations"
+            case .models: "Choose an endpoint model"
+            case .skills: "Choose instructions for this chat"
+            case .help: "Commands and keyboard shortcuts"
+            }
+        }
+    }
+
     private enum ParsedSlashCommand {
         case clear
         case context
         case help
+        case home
         case model(name: String)
         case mode(AppMode)
         case quit
@@ -321,21 +343,27 @@ private struct ChatView: View {
             }
         }
 
-        var color: Color {
+        func color(in palette: LowlightPalette) -> Color {
             switch self {
-            case .idle: LowlightPalette.muted
-            case .connecting, .clearing, .generating, .synthesizing: LowlightPalette.accent
-            case .configured: LowlightPalette.accent
-            case .error: LowlightPalette.danger
+            case .idle: palette.muted
+            case .connecting, .clearing, .generating, .synthesizing: palette.accent
+            case .configured: palette.accent
+            case .error: palette.danger
             }
         }
     }
 
     private static let bottomAnchor = "transcript-bottom"
 
-    private let initialModel: String
+    @State private var allowsModelFallback: Bool
     @State private var endpoint: String
     @State private var appMode: AppMode = .chat
+    @State private var activeScreen: AgentScreen = .chat
+    @State private var screenReturnTarget: AgentScreen = .chat
+    @State private var navigatorIndex = 0
+    @State private var sessionScreenItems: [BrowserItem] = []
+    @State private var sessionScreenIndex = 0
+    @State private var sessionScreenStatus: String?
     @State private var ttsModel = "tts-1"
     @State private var ttsVoice = "alloy"
     @State private var ttsFormat = "mp3"
@@ -419,6 +447,7 @@ private struct ChatView: View {
 
     init(
         initialModel: String,
+        allowsModelFallback: Bool,
         endpoint: String,
         apiKeyEnvironment: String,
         initialEffort: ReasoningEffort?,
@@ -434,7 +463,7 @@ private struct ChatView: View {
         sessionsDirectory: String?,
         resumeSelector: String?
     ) {
-        self.initialModel = initialModel
+        _allowsModelFallback = State(initialValue: allowsModelFallback)
         _endpoint = State(initialValue: endpoint)
         _apiKeyEnvironment = State(initialValue: apiKeyEnvironment)
         _reasoningEffort = State(initialValue: initialEffort)
@@ -458,13 +487,24 @@ private struct ChatView: View {
     var body: some View {
         GeometryReader { geometry in
         VStack(alignment: .leading, spacing: 0) {
-            transcriptView(width: geometry.size.width, height: geometry.size.height)
-            if let saveError { Text(saveError).foregroundStyle(LowlightPalette.danger).padding(.horizontal, 1) }
-            composer(width: geometry.size.width)
-            if browser != nil && !confirmingExit { browserPicker(width: geometry.size.width) }
-            else if choosingSkills && !confirmingExit { skillPicker }
-            else if !visibleSlashCommands.isEmpty && !confirmingExit { commandSuggestions(width: geometry.size.width) }
-            else { footer(width: geometry.size.width) }
+            switch activeScreen {
+            case .chat:
+                transcriptView(width: geometry.size.width, height: geometry.size.height)
+            case .help:
+                helpScreen(width: geometry.size.width, height: geometry.size.height)
+            case .navigator:
+                navigatorScreen(width: geometry.size.width, height: geometry.size.height)
+            case .sessions:
+                sessionsScreen(width: geometry.size.width, height: geometry.size.height)
+            }
+            if activeScreen == .chat {
+                if let saveError { Text(saveError).foregroundStyle(palette.danger).padding(.horizontal, 1) }
+                composer(width: geometry.size.width)
+                if browser != nil && !confirmingExit { browserPicker(width: geometry.size.width) }
+                else if choosingSkills && !confirmingExit { skillPicker }
+                else if !visibleSlashCommands.isEmpty && !confirmingExit { commandSuggestions(width: geometry.size.width) }
+                else { footer(width: geometry.size.width) }
+            }
         }
         .frame(
             maxWidth: .infinity,
@@ -472,9 +512,7 @@ private struct ChatView: View {
             alignment: .topLeading
         )
         }
-        .background(Color.white)
-        .foregroundStyle(LowlightPalette.ink)
-        .environment(\.terminalAppearance, LowlightPalette.appearance)
+        .foregroundStyle(.primary)
         .onChange(of: draft) {
             confirmingExit = false
             commandChoiceIndex = 0
@@ -497,10 +535,8 @@ private struct ChatView: View {
             }
             if let resumeSelector {
                 resumeConversation(resumeSelector)
-            } else if !initialModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                loadModel()
             } else {
-                promptIsFocused = true
+                loadModel()
             }
         }
         .onDisappear {
@@ -514,13 +550,17 @@ private struct ChatView: View {
             Task { await activeSession?.shutdown() }
         }
         .onKeyPress(.escape) { _ in
+            if activeScreen != .chat {
+                closeActiveScreen()
+                return .handled
+            }
             if confirmingExit { confirmingExit = false; return .handled }
             if editingSystem {
                 editingSystem = false
                 promptIsFocused = true
                 return .handled
             }
-            guard phase == .generating || phase == .synthesizing else { return .ignored }
+            guard isBusy else { return .ignored }
             stopGeneration()
             return .handled
         }
@@ -540,46 +580,63 @@ private struct ChatView: View {
             followsTranscript.toggle()
             return .handled
         }
+        .onKeyPress(.character("g"), modifiers: .ctrl) { _ in
+            openNavigator()
+            return .handled
+        }
+        .onKeyPress(.arrowUp) { _ in
+            guard activeScreen != .chat else { return .ignored }
+            moveScreenSelection(by: -1)
+            return .handled
+        }
+        .onKeyPress(.arrowDown) { _ in
+            guard activeScreen != .chat else { return .ignored }
+            moveScreenSelection(by: 1)
+            return .handled
+        }
+        .onKeyPress(.return) { _ in
+            guard activeScreen != .chat else { return .ignored }
+            selectScreenItem()
+            return .handled
+        }
     }
 
     private var displayWorkspace: String {
         workspacePath
     }
 
-    private func header(width: Int) -> some View {
+    private var header: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 1) {
-                Text(LowlightBrand.mark).foregroundStyle(LowlightPalette.blue)
-                Text("lowlight").bold().foregroundStyle(LowlightPalette.accent)
-                if appMode == .tts { Text("/ speech").foregroundStyle(LowlightPalette.muted) }
+                LowlightLogo()
+                if appMode == .tts { Text("/ speech").foregroundStyle(palette.muted) }
                 Spacer(minLength: 1)
-                Text(conversationTitle).foregroundStyle(LowlightPalette.muted).lineLimit(1)
+                Text(conversationTitle).foregroundStyle(palette.muted).lineLimit(1)
             }
             Text("\(displayWorkspace)  ·  \(activeModelLabel)")
-                .foregroundStyle(LowlightPalette.muted).lineLimit(1)
+                .foregroundStyle(palette.muted).lineLimit(1)
         }
-        .padding(.horizontal, 2).padding(.vertical, 1)
+        .padding(.horizontal, 2)
+        .padding(.top, 1)
+        .padding(.bottom, transcript.messages.isEmpty ? 0 : 1)
+    }
+
+    private func screenBrand(_ title: String) -> some View {
+        HStack(alignment: .center, spacing: 2) {
+            LowlightLogo()
+            Text("/ \(title)").foregroundStyle(palette.muted)
+        }
     }
 
     private func transcriptView(width: Int, height: Int) -> some View {
-        let lineWidth = max(10, width - 6)
-        let rows = transcript.messages.reduce(0) { count, message in
-            let thinking = message.reasoning ?? ""
-            let thinkingRows = thinking.isEmpty ? 0 : 2 + (showThinking
-                ? thinking.components(separatedBy: "\n").reduce(0) { $0 + max(1, ($1.count + lineWidth - 1) / lineWidth) } : 0)
-            return count + thinkingRows + 1 + message.text.components(separatedBy: "\n").reduce(0) {
-                $0 + max(1, ($1.count + lineWidth - 1) / lineWidth)
-            }
-        }
         let extra = browser != nil ? min(6, filteredBrowserItems.count) + 3
             : choosingSkills ? min(6, skillChoices.count) + 4
             : visibleSlashCommands.isEmpty ? 2 : min(Self.commandMenuRows, visibleSlashCommands.count) + 2
         let available = max(3, height - composerRows(width: width) - 2 - extra - (pendingAttachments.isEmpty ? 0 : 1) - (saveError == nil ? 0 : 1))
-        let contentHeight = transcript.messages.isEmpty ? 15 : 7 + rows
         return ScrollViewReader { proxy in
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 1) {
-                    header(width: width)
+                    header
                     if transcript.messages.isEmpty {
                         emptyState
                     } else {
@@ -599,7 +656,7 @@ private struct ChatView: View {
                 maxWidth: .infinity,
                 alignment: .topLeading
             )
-            .frame(height: min(available, contentHeight))
+            .frame(height: available, alignment: .topLeading)
             .onChange(of: transcript.messages) {
                 if followsTranscript { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
             }
@@ -617,7 +674,7 @@ private struct ChatView: View {
         VStack(alignment: .leading, spacing: 1) {
             switch phase {
             case .error:
-                Text("! \(status)").foregroundStyle(LowlightPalette.danger)
+                Text("! \(status)").foregroundStyle(palette.danger)
                 if startupError == nil {
                     Text("Offline · \(endpoint). Use /set endpoint-url URL to change it.")
                         .foregroundStyle(.secondary)
@@ -626,7 +683,7 @@ private struct ChatView: View {
                         .foregroundStyle(.secondary)
                 }
             case .configured:
-                Text("bring your model. keep the conversation.").foregroundStyle(LowlightPalette.muted)
+                Text("bring your model. keep the conversation.").foregroundStyle(palette.muted)
                 Text("Tip: Chats save automatically. Use /resume last to pick up where you left off.")
                     .foregroundStyle(.secondary)
             case .connecting, .clearing:
@@ -637,7 +694,7 @@ private struct ChatView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(1)
+        .padding(.horizontal, 2)
     }
 
     private func commandSuggestions(width: Int) -> some View {
@@ -648,20 +705,20 @@ private struct ChatView: View {
             ForEach(Array(commands.enumerated()).dropFirst(start).prefix(Self.commandMenuRows), id: \.element.id) { index, command in
                 HStack(spacing: 1) {
                     Text(index == selected ? ">" : " ")
-                        .foregroundStyle(LowlightPalette.accent)
+                        .foregroundStyle(palette.accent)
                     Text(String(command.usage.dropFirst()))
-                        .foregroundStyle(index == selected ? LowlightPalette.accent : LowlightPalette.muted)
+                        .foregroundStyle(index == selected ? palette.accent : palette.muted)
                         .frame(width: max(12, min(46, width / 2 - 4)), alignment: .leading)
                         .lineLimit(1)
                     Text(command.description)
-                        .foregroundStyle(index == selected ? LowlightPalette.accent : LowlightPalette.muted)
+                        .foregroundStyle(index == selected ? palette.accent : palette.muted)
                 }.lineLimit(1)
             }
             Text(" ")
             HStack(spacing: 2) {
-                Text("(\(selected + 1)/\(commands.count))").foregroundStyle(LowlightPalette.muted)
+                Text("(\(selected + 1)/\(commands.count))").foregroundStyle(palette.muted)
                 Text("↑↓ select · tab complete · enter choose · esc close")
-                    .foregroundStyle(LowlightPalette.muted).lineLimit(1)
+                    .foregroundStyle(palette.muted).lineLimit(1)
             }
         }.padding(.horizontal, 2)
     }
@@ -669,19 +726,19 @@ private struct ChatView: View {
     private var skillPicker: some View {
         let start = max(0, skillChoiceIndex - 5)
         return VStack(alignment: .leading, spacing: 0) {
-            Text("Skills · \(chosenSkillNames.count) selected").bold().foregroundStyle(LowlightPalette.accent)
+            Text("Skills · \(chosenSkillNames.count) selected").bold().foregroundStyle(palette.accent)
             if skillChoices.isEmpty {
-                Text("No skills found in this workspace. Add .midnight/skills/NAME/SKILL.md.").foregroundStyle(.secondary)
+                Text("No skills found in this workspace. Add ~/.lowlight/skills/NAME/SKILL.md.").foregroundStyle(.secondary)
             }
             ForEach(Array(skillChoices.enumerated()).dropFirst(start).prefix(6), id: \.element.name) { index, skill in
                 HStack(spacing: 1) {
-                    Text(index == skillChoiceIndex ? "›" : " ").foregroundStyle(LowlightPalette.accent)
-                    Text(chosenSkillNames.contains(skill.name) ? "[✓]" : "[ ]").foregroundStyle(LowlightPalette.accent)
-                    Text(skill.name).foregroundStyle(index == skillChoiceIndex ? LowlightPalette.accent : LowlightPalette.muted)
+                    Text(index == skillChoiceIndex ? "›" : " ").foregroundStyle(palette.accent)
+                    Text(chosenSkillNames.contains(skill.name) ? "[✓]" : "[ ]").foregroundStyle(palette.accent)
+                    Text(skill.name).foregroundStyle(index == skillChoiceIndex ? palette.accent : palette.muted)
                     Text(skill.description).foregroundStyle(.secondary)
                 }.lineLimit(1)
             }
-            if let skillPickerError { Text(skillPickerError).foregroundStyle(LowlightPalette.detailAccent).lineLimit(1) }
+            if let skillPickerError { Text(skillPickerError).foregroundStyle(palette.detailAccent).lineLimit(1) }
             Text("↑↓ move · space toggle · enter apply · esc cancel").foregroundStyle(.secondary)
         }.padding(.horizontal, 2).padding(.vertical, 1)
     }
@@ -776,13 +833,13 @@ private struct ChatView: View {
         VStack(alignment: .leading, spacing: 0) {
             if !pendingAttachments.isEmpty {
                 Text("Attached: \(pendingAttachments.map(\.name).joined(separator: ", ")) · ≈\(pendingAttachments.reduce(0) { $0 + $1.estimatedTokens }) tokens · /attach to manage")
-                    .foregroundStyle(LowlightPalette.muted).lineLimit(1)
+                    .foregroundStyle(palette.muted).lineLimit(1)
             }
             if editingSystem {
                 Text(creatingSkillName.map { "Create skill: \($0) · Ctrl-S save · Esc cancel" }
                      ?? "System prompt · Ctrl-S apply · Esc cancel")
-                    .foregroundStyle(LowlightPalette.detailAccent)
-                if let instructionEditorError { Text(instructionEditorError).foregroundStyle(LowlightPalette.danger) }
+                    .foregroundStyle(palette.detailAccent)
+                if let instructionEditorError { Text(instructionEditorError).foregroundStyle(palette.danger) }
                 TextEditor(text: $systemDraft)
                     .focused($promptIsFocused)
                     .onKeyPress(.character("s"), modifiers: .ctrl) { _ in
@@ -805,7 +862,7 @@ private struct ChatView: View {
                     }
             } else {
                 HStack(alignment: .center, spacing: 1) {
-                Text(">").foregroundStyle(LowlightPalette.blue)
+                Text(">").foregroundStyle(palette.blue)
                 TextEditor(text: $draft)
                     .focused($promptIsFocused)
                     .onKeyPress(.return) { _ in
@@ -856,7 +913,7 @@ private struct ChatView: View {
                         if browser != nil { closeBrowser(); return .handled }
                         if choosingSkills { choosingSkills = false; return .handled }
                         if !visibleSlashCommands.isEmpty { dismissedCommandDraft = draft; return .handled }
-                        guard generationTask != nil || connectionTask != nil else { return .ignored }
+                        guard isBusy else { return .ignored }
                         stopGeneration(); return .handled
                     }
                     .onKeyPress(.character("c"), modifiers: .ctrl) { _ in
@@ -866,6 +923,9 @@ private struct ChatView: View {
                     .onKeyPress(.character("d"), modifiers: .ctrl) { _ in exitChat(); return .handled }
                     .onKeyPress(.character("f"), modifiers: .ctrl) { _ in
                         followsTranscript.toggle(); return .handled
+                    }
+                    .onKeyPress(.character("g"), modifiers: .ctrl) { _ in
+                        openNavigator(); return .handled
                     }
                     .onKeyPress(.character("t"), modifiers: .ctrl) { _ in
                         showThinking.toggle(); return .handled
@@ -889,11 +949,11 @@ private struct ChatView: View {
                 }
                 .overlay(alignment: .top) {
                     Text(String(repeating: "─", count: max(1, width - 2)))
-                        .foregroundStyle(LowlightPalette.blue).allowsHitTesting(false)
+                        .foregroundStyle(palette.border).allowsHitTesting(false)
                 }
                 .overlay(alignment: .bottom) {
                     Text(String(repeating: "─", count: max(1, width - 2)))
-                        .foregroundStyle(LowlightPalette.blue).allowsHitTesting(false)
+                        .foregroundStyle(palette.border).allowsHitTesting(false)
                 }
             }
         }.padding(.horizontal, 1)
@@ -902,9 +962,9 @@ private struct ChatView: View {
     private func footer(width: Int) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 1) {
-                Text("➜ \(displayWorkspace) · \(activeModelLabel)").foregroundStyle(LowlightPalette.accent).lineLimit(1)
-                Text("· effort \(reasoningEffort?.rawValue ?? "default")").foregroundStyle(LowlightPalette.detailAccent)
-                if !activeSkills.isEmpty { Text("· \(activeSkills.count) \(activeSkills.count == 1 ? "skill" : "skills")").foregroundStyle(LowlightPalette.muted) }
+                Text("➜ \(displayWorkspace) · \(activeModelLabel)").foregroundStyle(palette.muted).lineLimit(1)
+                Text("· effort \(reasoningEffort?.rawValue ?? "default")").foregroundStyle(palette.detailAccent)
+                if !activeSkills.isEmpty { Text("· \(activeSkills.count) \(activeSkills.count == 1 ? "skill" : "skills")").foregroundStyle(palette.muted) }
             }
         HStack(spacing: 1) {
             Text(footerHint).foregroundStyle(.secondary)
@@ -914,16 +974,16 @@ private struct ChatView: View {
                     "ctx ≈\(compactTokenCount(contextSnapshot.estimatedInputTokens))"
                         + "/\(compactTokenCount(contextSnapshot.inputBudgetTokens))"
                 )
-                .foregroundStyle(LowlightPalette.accent)
+                .foregroundStyle(palette.muted)
             }
             if width >= 100, let rate = lastPerformance?.tokensPerSecond {
                 Text("• \(formattedRate(rate)) tok/s")
-                    .foregroundStyle(LowlightPalette.accent)
+                    .foregroundStyle(palette.muted)
             }
-            Text(phase.label).foregroundStyle(phase.color)
-            if appMode == .tts { Text("TTS").foregroundStyle(LowlightPalette.detailAccent) }
-            if contextSnapshot?.hasSummary == true { Text("checkpoint").foregroundStyle(LowlightPalette.muted) }
-            if !followsTranscript { Text("paused · ctrl-f follow").foregroundStyle(LowlightPalette.detailAccent) }
+            Text(phase.label).foregroundStyle(phase.color(in: palette))
+            if appMode == .tts { Text("TTS").foregroundStyle(palette.detailAccent) }
+            if contextSnapshot?.hasSummary == true { Text("checkpoint").foregroundStyle(palette.muted) }
+            if !followsTranscript { Text("paused · ctrl-f follow").foregroundStyle(palette.detailAccent) }
         }
         .lineLimit(1)
         }.padding(.horizontal, 2)
@@ -960,18 +1020,18 @@ private struct ChatView: View {
             return "configuration error  •  /exit"
         }
         if phase == .connecting {
-            return "checking endpoint  •  /exit"
+            return "checking endpoint  ·  ctrl-c / esc cancel"
         }
         if session == nil {
             return "enter send  ·  /help"
         }
         if phase == .generating || phase == .synthesizing {
-            return "\(status)  ·  esc stop"
+            return "\(status)  ·  ctrl-c / esc stop"
         }
         if phase == .clearing {
             return status
         }
-        return "enter send  ·  ctrl-n newline  ·  ? help"
+        return "enter send  ·  ctrl-n newline  ·  ctrl-g screens  ·  ? help"
     }
 
     private var availableModelsSummary: String {
@@ -980,8 +1040,12 @@ private struct ChatView: View {
     }
 
     private func confirmExit() {
+        if isBusy || generationTask != nil || connectionTask != nil || clearTask != nil {
+            confirmingExit = false
+            stopGeneration()
+            return
+        }
         if confirmingExit { exitChat(); return }
-        if isBusy { stopGeneration() }
         confirmingExit = true
     }
 
@@ -999,8 +1063,10 @@ private struct ChatView: View {
 
     private func loadModel() {
         let requestedPath = modelPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard startupError == nil, !requestedPath.isEmpty, !isBusy else { return }
+        guard startupError == nil, !isBusy else { return }
         connectionTask?.cancel()
+        if browser == .models { closeBrowser() }
+        confirmingExit = false
         let previousSession = session
         session = nil
         modelCatalog = []
@@ -1015,32 +1081,41 @@ private struct ChatView: View {
             }
             await previousSession?.shutdown()
             do {
+                let catalog: [OpenAIModel]?
+                do {
+                    catalog = try await EndpointModelSession.fetchModelCatalog(endpoint: endpoint, apiKey: apiKey)
+                } catch EndpointSessionError.httpStatus(let code) where code == 404 || code == 405 {
+                    catalog = nil
+                }
+                try Task.checkCancellation()
+                modelCatalog = catalog ?? []
+                availableModels = modelCatalog.map(\.id)
+                let selectedModel = try EndpointModelSelection.resolve(
+                    requestedModel: requestedPath,
+                    catalog: catalog,
+                    allowsFallback: allowsModelFallback
+                )
                 let connected = try EndpointModelSession(
-                    model: requestedPath, endpoint: endpoint, apiKey: apiKey,
+                    model: selectedModel, endpoint: endpoint, apiKey: apiKey,
                     maximumTokens: maximumTokens, contextWindowTokens: contextWindowTokens,
                     contextSafetyReserveTokens: contextSafetyReserveTokens,
                     contextCompactAtPercent: contextCompactAtPercent,
                     contextStrategy: contextStrategy,
-                    systemPrompt: composeSystemPrompt(base: systemPrompt, skills: activeSkills)
+                    systemPrompt: ChatSystemPrompt.compose(base: systemPrompt, skills: activeSkills)
                 )
                 contextSnapshot = try await connected.restoreContext(savedContext)
-                do {
-                    modelCatalog = try await connected.modelCatalog()
-                } catch EndpointSessionError.httpStatus(let code) where code == 404 || code == 405 {
-                    modelCatalog = []
-                    addCommandNotice("This endpoint does not provide a model list. Using the explicitly selected model; capabilities are unknown.")
-                }
-                availableModels = modelCatalog.map(\.id)
                 try Task.checkCancellation()
                 session = connected
                 modelPath = connected.modelPath
                 phase = .configured
                 status = "Connected."
                 _ = persistConversation()
-                if !capabilityIssues.isEmpty { addCommandNotice(capabilityIssues.joined(separator: "\n")) }
-                if !availableModels.isEmpty && !availableModels.contains(requestedPath) {
-                    addCommandNotice("Model \(requestedPath) is not in the server's list. Use /model to choose one.")
+                if catalog == nil {
+                    addCommandNotice("This endpoint does not provide a model list. Using the selected model; capabilities are unknown.")
+                } else if !requestedPath.isEmpty && requestedPath != selectedModel {
+                    addCommandNotice("\(requestedPath) is no longer available. Using \(selectedModel), the server's available model.")
                 }
+                if !capabilityIssues.isEmpty { addCommandNotice(capabilityIssues.joined(separator: "\n")) }
                 if retryAfterConnect {
                     retryAfterConnect = false
                     Task { @MainActor in
@@ -1049,10 +1124,16 @@ private struct ChatView: View {
                         sendChat()
                     }
                 }
-            } catch is CancellationError {
+            } catch where error is CancellationError || Task.isCancelled || (error as? URLError)?.code == .cancelled {
                 retryAfterConnect = false
                 phase = .idle
                 status = "Connection cancelled."
+            } catch let error as EndpointModelSelectionError {
+                phase = .error
+                retryAfterConnect = false
+                status = error.localizedDescription
+                if !transcript.messages.isEmpty { transcript.addNotice(status) }
+                if !modelCatalog.isEmpty { openModelBrowser() }
             } catch {
                 phase = .error
                 retryAfterConnect = false
@@ -1172,6 +1253,11 @@ private struct ChatView: View {
                 return .invalid(message: "Usage: \(command.usage)")
             }
             return .help
+        case .home:
+            guard argument == nil else {
+                return .invalid(message: "Usage: \(command.usage)")
+            }
+            return .home
         case .model:
             return .model(name: argument ?? "")
         case .mode:
@@ -1226,10 +1312,13 @@ private struct ChatView: View {
         case .help:
             clearComposer()
             showHelp()
+        case .home:
+            clearComposer()
+            openNavigator()
         case let .model(name):
             clearComposer()
             if name.isEmpty { openModelBrowser() }
-            else { modelPath = name; loadModel() }
+            else { modelPath = name; allowsModelFallback = false; loadModel() }
         case let .mode(mode):
             clearComposer()
             appMode = mode
@@ -1255,12 +1344,194 @@ private struct ChatView: View {
     }
 
     private func showHelp() {
+        screenReturnTarget = activeScreen == .navigator ? .navigator : .chat
+        activeScreen = .help
+        promptIsFocused = false
+    }
+
+    private func helpScreen(width: Int, height: Int) -> some View {
         let commands = Self.slashCommands
             .map { "\($0.usage) — \($0.description)" }
             .joined(separator: "\n")
-        addCommandNotice(
-            "\(commands)\n\nEnter sends · Ctrl-N adds a newline · Up/Down recalls single-line input · Tab completes\nEsc stops · Ctrl-C twice saves and exits · Ctrl-T toggles thinking · Ctrl-D saves and exits · Ctrl-F toggles transcript following"
-        )
+        return ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 1) {
+                screenBrand("help")
+                Text("Commands").bold().foregroundStyle(palette.ink)
+                Text(commands).foregroundStyle(palette.ink)
+                Text("Keyboard").bold().foregroundStyle(palette.ink).padding(.top, 1)
+                Text("Enter sends · Ctrl-N adds a newline · Up/Down recalls input · Tab completes\nCtrl-G opens screens · Esc returns · Ctrl-C stops work; twice while idle saves and exits · Ctrl-T toggles thinking · Ctrl-D saves and exits · Ctrl-F toggles transcript following")
+                    .foregroundStyle(palette.muted)
+                Text("Esc to return").foregroundStyle(palette.blue).padding(.top, 1)
+            }
+            .padding(.horizontal, 2).padding(.vertical, 1)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: max(3, height - 4))
+    }
+
+    private func navigatorScreen(width: Int, height: Int) -> some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 1) {
+                screenBrand("navigator")
+                Text("Move between your current chat and its working screens.")
+                    .foregroundStyle(palette.muted)
+                Text("Screens").bold().foregroundStyle(palette.ink).padding(.top, 1)
+                ForEach(Array(NavigatorDestination.allCases.enumerated()), id: \.element.id) { index, destination in
+                    HStack(spacing: 1) {
+                        Text(index == navigatorIndex ? "›" : " ")
+                            .foregroundStyle(index == navigatorIndex ? palette.accent : palette.muted)
+                        Text(destination.title).bold()
+                            .foregroundStyle(index == navigatorIndex ? palette.ink : palette.muted)
+                            .frame(width: min(12, max(8, width / 6)), alignment: .leading)
+                        Text(destination.detail)
+                            .foregroundStyle(index == navigatorIndex ? palette.ink : palette.muted)
+                    }
+                    .lineLimit(1)
+                }
+                Text("↑↓ choose · enter open · esc return · ctrl-g screens")
+                    .foregroundStyle(palette.blue).padding(.top, 1)
+            }
+            .padding(.horizontal, 2).padding(.vertical, 1)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: max(3, height - 2))
+    }
+
+    private func sessionsScreen(width: Int, height: Int) -> some View {
+        let start = max(0, sessionScreenIndex - 6)
+        return ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 1) {
+                screenBrand("chats")
+                Text("Open a saved conversation, or return to the active response with Esc.")
+                    .foregroundStyle(palette.muted)
+                if sessionScreenItems.isEmpty {
+                    Text("No saved chats yet.").foregroundStyle(.secondary).padding(.top, 1)
+                } else {
+                    ForEach(Array(sessionScreenItems.enumerated()).dropFirst(start), id: \.element.id) { index, item in
+                        HStack(spacing: 1) {
+                            Text(index == sessionScreenIndex ? "›" : " ")
+                                .foregroundStyle(index == sessionScreenIndex ? palette.accent : palette.muted)
+                            Text(item.title).bold()
+                                .foregroundStyle(index == sessionScreenIndex ? palette.ink : palette.muted)
+                                .frame(width: min(38, max(16, width / 3)), alignment: .leading)
+                                .lineLimit(1)
+                            Text(item.detail)
+                                .foregroundStyle(index == sessionScreenIndex ? palette.ink : palette.muted)
+                                .lineLimit(1)
+                        }
+                        .lineLimit(1)
+                    }
+                }
+                if let sessionScreenStatus {
+                    Text(sessionScreenStatus).foregroundStyle(palette.muted).padding(.top, 1)
+                }
+                Text("↑↓ choose · enter open · esc navigator · ctrl-g screens")
+                    .foregroundStyle(palette.blue).padding(.top, 1)
+            }
+            .padding(.horizontal, 2).padding(.vertical, 1)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: max(3, height - 2))
+    }
+
+    private func openNavigator() {
+        guard !editingSystem else { return }
+        if browser != nil { closeBrowser() }
+        choosingSkills = false
+        navigatorIndex = 0
+        activeScreen = .navigator
+        promptIsFocused = false
+    }
+
+    private func openSessionsScreen() {
+        guard persistConversation() else {
+            sessionScreenItems = []
+            sessionScreenStatus = saveError ?? "Could not save the current chat."
+            activeScreen = .sessions
+            promptIsFocused = false
+            return
+        }
+        do {
+            sessionScreenItems = try store.list().map {
+                BrowserItem(
+                    id: $0.id.uuidString,
+                    title: "\($0.id == conversationID ? "● " : "")\($0.title)\($0.hasDraft ? " · draft" : "")",
+                    detail: "\($0.id == conversationID && isBusy ? "working · " : "")\($0.model) · \($0.workspacePath)"
+                )
+            }
+            sessionScreenIndex = min(sessionScreenIndex, max(0, sessionScreenItems.count - 1))
+            sessionScreenStatus = nil
+        } catch {
+            sessionScreenItems = []
+            sessionScreenStatus = error.localizedDescription
+        }
+        screenReturnTarget = .navigator
+        activeScreen = .sessions
+        promptIsFocused = false
+    }
+
+    private func closeActiveScreen() {
+        switch activeScreen {
+        case .chat:
+            break
+        case .help:
+            activeScreen = screenReturnTarget
+        case .navigator:
+            activeScreen = .chat
+        case .sessions:
+            activeScreen = .navigator
+        }
+        promptIsFocused = activeScreen == .chat
+    }
+
+    private func moveScreenSelection(by amount: Int) {
+        switch activeScreen {
+        case .navigator:
+            navigatorIndex = min(
+                max(0, navigatorIndex + amount),
+                NavigatorDestination.allCases.count - 1
+            )
+        case .sessions:
+            sessionScreenIndex = min(
+                max(0, sessionScreenIndex + amount),
+                max(0, sessionScreenItems.count - 1)
+            )
+        case .chat, .help:
+            break
+        }
+    }
+
+    private func selectScreenItem() {
+        switch activeScreen {
+        case .navigator:
+            let destination = NavigatorDestination.allCases[navigatorIndex]
+            switch destination {
+            case .chat:
+                activeScreen = .chat
+                promptIsFocused = true
+            case .sessions:
+                openSessionsScreen()
+            case .models:
+                activeScreen = .chat
+                openModelBrowser()
+            case .skills:
+                activeScreen = .chat
+                openSkillPicker()
+            case .help:
+                showHelp()
+            }
+        case .sessions:
+            guard sessionScreenItems.indices.contains(sessionScreenIndex) else { return }
+            guard !isBusy else {
+                sessionScreenStatus = "The current chat is working. Press Esc to return, then Esc again to stop it before switching."
+                return
+            }
+            let sessionID = sessionScreenItems[sessionScreenIndex].id
+            activeScreen = .chat
+            resumeConversation(sessionID)
+        case .chat, .help:
+            break
+        }
     }
 
     private func clearComposer() { draft = "" }
@@ -1273,14 +1544,14 @@ private struct ChatView: View {
     }
 
     private var effectiveSystemPrompt: String? {
-        composeSystemPrompt(base: systemPrompt, skills: activeSkills)
+        ChatSystemPrompt.compose(base: systemPrompt, skills: activeSkills)
     }
 
     private func conversationSnapshot() -> SavedConversation {
         SavedConversation(
             id: conversationID, title: conversationTitle,
             createdAt: conversationCreatedAt, updatedAt: Date(),
-            model: modelName, endpoint: endpoint, workspacePath: workspacePath,
+            model: modelPath.trimmingCharacters(in: .whitespacesAndNewlines), endpoint: endpoint, workspacePath: workspacePath,
             maximumTokens: maximumTokens, contextWindowTokens: contextWindowTokens,
             contextSafetyReserveTokens: contextSafetyReserveTokens,
             contextCompactAtPercent: contextCompactAtPercent,
@@ -1387,6 +1658,7 @@ private struct ChatView: View {
         conversationTitle = saved.title
         conversationCreatedAt = saved.createdAt
         modelPath = saved.model
+        allowsModelFallback = true
         endpoint = saved.endpoint
         workspacePath = saved.workspacePath
         maximumTokens = saved.maximumTokens
@@ -1502,7 +1774,7 @@ private struct ChatView: View {
         clearTask = Task { @MainActor in
             defer { clearTask = nil; promptIsFocused = true }
             do {
-                let effective = composeSystemPrompt(base: prompt, skills: skills)
+                let effective = ChatSystemPrompt.compose(base: prompt, skills: skills)
                 if let session {
                     contextSnapshot = try await session.updateSystemPrompt(effective)
                 } else {
@@ -1543,7 +1815,7 @@ private struct ChatView: View {
                 contextSnapshot = try await session.compact(guidance: guidance)
                 savedContext = await session.exportContext()
                 addCommandNotice("Context checkpoint saved. The full conversation remains in the transcript.")
-            } catch is CancellationError {
+            } catch where error is CancellationError || Task.isCancelled || (error as? URLError)?.code == .cancelled {
                 addCommandNotice("Compaction stopped; previous context retained.")
             } catch {
                 addCommandNotice("Compaction failed; previous context retained. \(error.localizedDescription)")
@@ -1750,7 +2022,7 @@ private struct ChatView: View {
                 }
                 phase = .configured
                 status = "Configured."
-            } catch is CancellationError {
+            } catch where error is CancellationError || Task.isCancelled || (error as? URLError)?.code == .cancelled {
                 transcript.stop(responseID: responseID)
                 phase = .configured
                 status = "Generation stopped."
@@ -1808,7 +2080,7 @@ private struct ChatView: View {
                 transcript.finish(responseID: responseID)
                 phase = .configured
                 status = "Speech generated."
-            } catch is CancellationError {
+            } catch where error is CancellationError || Task.isCancelled || (error as? URLError)?.code == .cancelled {
                 transcript.stop(responseID: responseID)
                 phase = .configured
                 status = "Speech generation stopped."
@@ -1843,12 +2115,15 @@ private struct ChatView: View {
     }
 
     private func stopGeneration() {
-        if phase == .connecting {
+        if connectionTask != nil {
             status = "Cancelling connection…"
             connectionTask?.cancel()
         } else if generationTask != nil {
             status = "Stopping…"
             generationTask?.cancel()
+        } else if clearTask != nil {
+            status = "Stopping…"
+            clearTask?.cancel()
         }
     }
 
@@ -1929,16 +2204,16 @@ private struct ChatView: View {
         let items = filteredBrowserItems
         let start = max(0, browserIndex - 5)
         return VStack(alignment: .leading, spacing: 0) {
-            Text(browserTitle).bold().foregroundStyle(LowlightPalette.accent).lineLimit(1)
+            Text(browserTitle).bold().foregroundStyle(palette.accent).lineLimit(1)
             if items.isEmpty { Text("No matches.").foregroundStyle(.secondary) }
             ForEach(Array(items.enumerated()).dropFirst(start).prefix(6), id: \.element.id) { index, item in
                 HStack(spacing: 1) {
                     Text(index == browserIndex ? ">" : " ")
                     Text(item.title).frame(width: max(15, min(46, width / 2)), alignment: .leading).lineLimit(1)
                     Text(item.detail).lineLimit(1)
-                }.foregroundStyle(index == browserIndex ? LowlightPalette.accent : LowlightPalette.muted).lineLimit(1)
+                }.foregroundStyle(index == browserIndex ? palette.accent : palette.muted).lineLimit(1)
             }
-            if let browserStatus { Text(browserStatus).foregroundStyle(LowlightPalette.muted).lineLimit(1) }
+            if let browserStatus { Text(browserStatus).foregroundStyle(palette.muted).lineLimit(1) }
             Text("\(items.isEmpty ? 0 : browserIndex + 1)/\(items.count) · ↑↓ select · enter choose · esc cancel")
                 .foregroundStyle(.secondary).lineLimit(1)
         }.padding(.horizontal, 2)
@@ -1970,7 +2245,7 @@ private struct ChatView: View {
         closeBrowser()
         switch kind {
         case .sessions: resumeConversation(item.id)
-        case .models: modelPath = item.id; loadModel()
+        case .models: modelPath = item.id; allowsModelFallback = false; loadModel()
         case .profiles: useProfile(item.id)
         case .edits: reviseTurn(item.id, retry: false)
         case .search:
@@ -2143,7 +2418,12 @@ private struct ChatView: View {
                     BrowserItem(id: $0.name, title: $0.name, detail: "\($0.model) · \($0.endpoint)")
                 }, status: catalog.warnings.first ?? (catalog.profiles.isEmpty ? "Use /profile save NAME to save these settings." : nil))
             } else if parts.count == 2, parts[0] == "save" {
-                let profile = ConnectionProfile(name: parts[1], endpoint: endpoint, model: modelName,
+                let selectedModel = modelPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !selectedModel.isEmpty else {
+                    addCommandNotice("Choose a model with /model before saving a connection profile.")
+                    return
+                }
+                let profile = ConnectionProfile(name: parts[1], endpoint: endpoint, model: selectedModel,
                     apiKeyEnvironment: apiKeyEnvironment, contextWindow: contextWindowTokens,
                     maximumTokens: maximumTokens, safetyReserve: contextSafetyReserveTokens,
                     compactAtPercent: contextCompactAtPercent, reasoningEffort: reasoningEffort)
@@ -2157,7 +2437,7 @@ private struct ChatView: View {
     private func useProfile(_ name: String) {
         do {
             let profile = try ConnectionProfileStore().load(name)
-            endpoint = profile.endpoint; modelPath = profile.model
+            endpoint = profile.endpoint; modelPath = profile.model; allowsModelFallback = false
             apiKeyEnvironment = profile.apiKeyEnvironment; contextWindowTokens = profile.contextWindow
             maximumTokens = profile.maximumTokens; contextSafetyReserveTokens = profile.safetyReserve
             contextCompactAtPercent = profile.compactAtPercent; reasoningEffort = profile.reasoningEffort
@@ -2175,6 +2455,9 @@ private struct ChatView: View {
 
 @MainActor
 private struct LoadingProgressView: View {
+    @Environment(\.terminalAppearance) private var terminalAppearance
+    private var palette: LowlightPalette { LowlightPalette(appearance: terminalAppearance) }
+
     let label: String
 
     private let width = 24
@@ -2189,86 +2472,17 @@ private struct LoadingProgressView: View {
             let offset = phase <= travel ? phase : cycle - phase
 
             VStack(alignment: .leading, spacing: 0) {
-                Text(label).foregroundStyle(LowlightPalette.accent)
+                Text(label).foregroundStyle(palette.accent)
                 HStack(spacing: 0) {
                     Text(String(repeating: "─", count: offset))
                         .foregroundStyle(.secondary)
                     Text(String(repeating: "█", count: bandWidth))
-                        .foregroundStyle(LowlightPalette.accent)
+                        .foregroundStyle(palette.accent)
                     Text(String(repeating: "─", count: travel - offset))
                         .foregroundStyle(.secondary)
                 }
             }
         }
-    }
-}
-
-@MainActor
-private struct TranscriptRow: View {
-    let message: ChatMessage
-    let elapsedSeconds: Int
-    let showThinking: Bool
-
-    @ViewBuilder
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let attachments = message.attachments, !attachments.isEmpty {
-                Text("Attached: " + attachments.map(\.name).joined(separator: ", "))
-                    .foregroundStyle(LowlightPalette.muted).padding(.leading, 2)
-            }
-            if let reasoning = message.reasoning, !reasoning.isEmpty {
-                Text("\(showThinking ? "▾" : "▸") Thinking · ctrl-t to \(showThinking ? "hide" : "show")")
-                    .foregroundStyle(LowlightPalette.detailAccent)
-                if showThinking {
-                    Text(reasoning).foregroundStyle(LowlightPalette.muted).padding(.leading, 2)
-                }
-                if !message.text.isEmpty {
-                    Text("Answer").bold().foregroundStyle(LowlightPalette.accent)
-                }
-            }
-        HStack(alignment: .top, spacing: 1) {
-            if message.role == .notice {
-                Text("◇").foregroundStyle(LowlightPalette.accent)
-                Text(message.text).foregroundStyle(.secondary)
-            } else if message.role == .assistant,
-               message.state == .streaming,
-               message.text.isEmpty
-            {
-                Spinner().foregroundStyle(LowlightPalette.accent)
-                Text("\(message.reasoning == nil ? "Working" : "Thinking") (\(elapsedSeconds)s • esc to interrupt)")
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(message.role == .user ? "›" : "•")
-                    .foregroundStyle(
-                        message.role == .user
-                            ? LowlightPalette.detailAccent
-                            : LowlightPalette.accent
-                    )
-                if message.state == .failed {
-                    Text(message.text).foregroundStyle(LowlightPalette.danger)
-                } else {
-                    if message.role == .assistant {
-                        markdownText(message.text)
-                    } else {
-                        Text(message.text).foregroundStyle(LowlightPalette.accent)
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-    }
-
-    private func markdownText(_ source: String) -> Text {
-        var interpolation = Text.StringInterpolation(literalCapacity: source.count, interpolationCount: 8)
-        for span in ChatMarkdown.spans(source) {
-            var text = Text(span.text)
-            if span.bold { text = text.bold() }
-            if span.italic { text = text.italic() }
-            if span.code { text = text.foregroundStyle(LowlightPalette.accent) }
-            interpolation.appendInterpolation(text)
-        }
-        return Text(Text.RichContent(stringInterpolation: interpolation))
     }
 }
 

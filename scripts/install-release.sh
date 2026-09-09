@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION=v0.1.0-alpha.1
+VERSION=v0.1.0-beta.1
 REPOSITORY=standrze/lowlight
 PREFIX="${HOME:?HOME must be set}/.lowlight"
 UPDATE_PATH=true
@@ -53,9 +53,9 @@ else
   "$BUNDLE/payload/lowlight" --version
 fi
 if [[ "$PREFIX_SET" == true ]]; then
-  bash "$BUNDLE/install.sh" --prefix "$PREFIX"
+  LOWLIGHT_MODIFY_PATH=false bash "$BUNDLE/install.sh" --prefix "$PREFIX"
 else
-  bash "$BUNDLE/install.sh"
+  LOWLIGHT_MODIFY_PATH=false bash "$BUNDLE/install.sh"
 fi
 PREFIX="$(CDPATH= cd "$PREFIX" && pwd -P)"
 if [[ "$UPDATE_PATH" == true ]]; then

@@ -6,7 +6,7 @@
 
 `lowlight` is a terminal chat client for your models. It connects to Midnight Runner or another OpenAI-compatible server, with streaming answers, saved conversations, editable system prompts, and local skills.
 
-The interface uses a compact `◒ lowlight` header, light cyan and blue accents, and a simple prompt between horizontal rules. The command and Swift executable target are both `lowlight`.
+The interface uses a one-line `›_ lowlight` logo, your terminal's own background and foreground, and a simple prompt between neutral horizontal rules. One consistent indigo-blue (`#6574CD`) is used for the mark and accents on both light and dark themes; the wordmark uses the terminal's normal text color. `--ascii` provides a `>_ lowlight` fallback. The reusable SwiftTUI component is in `Sources/lowlight/LowlightLogo.swift`.
 
 ## Features
 
@@ -20,7 +20,7 @@ lowlight connects to a separately managed model server. Skills provide instructi
 
 ## Install a release
 
-The first prerelease is **v0.1.0-alpha.1**, with builds for:
+The current beta release is **v0.1.0-beta.1**, with builds for:
 
 | Download | Target |
 | --- | --- |
@@ -32,7 +32,7 @@ The release bundles include the Swift runtime where needed; a Swift compiler is 
 This repository is private. Install [GitHub CLI](https://cli.github.com), sign in with `gh auth login`, then run this one line:
 
 ```sh
-(set -o pipefail; gh api 'repos/standrze/lowlight/contents/scripts/install-release.sh?ref=v0.1.0-alpha.1' -H 'Accept: application/vnd.github.raw' | bash)
+(set -o pipefail; gh api 'repos/standrze/lowlight/contents/scripts/install-release.sh?ref=v0.1.0-beta.1' -H 'Accept: application/vnd.github.raw' | bash)
 ```
 
 The installer detects your OS and architecture, downloads the matching release, verifies SHA-256, and installs into `~/.lowlight`. It adds `~/.lowlight/bin` to `.zshrc` or `.bashrc`, keeping a backup before editing. Open a new terminal and run `lowlight`.
@@ -41,11 +41,15 @@ The installer detects your OS and architecture, downloads the matching release, 
 ~/.lowlight/
   bin/lowlight     Stable launcher
   lib/            Installed executable, resources, and bundled runtime
+  config/settings.json  Optional default settings
+  config/profiles/       Connection profiles
+  skills/               Personal skills
+  tts/           Generated speech audio
   sessions/chat/  Saved conversations
   logs/           Application logs
 ```
 
-Alternatively, download and extract the appropriate `.tar.gz` from [Releases](https://github.com/standrze/lowlight/releases), then run `./install.sh` inside the extracted folder. The offline installer does not edit shell configuration. Add `export PATH="$HOME/.lowlight/bin:$PATH"` yourself in that case. `--prefix PATH` changes the installation location; `--sessions-directory PATH` changes conversation storage.
+Alternatively, download and extract the appropriate `.tar.gz` from [Releases](https://github.com/standrze/lowlight/releases), then run `./install.sh` inside the extracted folder. The offline and source installers also configure shell PATH; use `--no-modify-path` to opt out. `--prefix PATH` changes the installation location; `--sessions-directory PATH` changes conversation storage.
 
 These are early builds. The macOS binary is ad-hoc signed, not Apple-notarized. Intel Macs, Linux ARM64, and Alpine/musl are not included in this release.
 
@@ -59,7 +63,7 @@ cd lowlight
 ./install.sh --configuration release
 ```
 
-The source installer does not change your shell configuration. Add this line to `~/.zshrc` or `~/.bashrc`, then open a new terminal:
+The source installer configures PATH in `~/.zshrc` or `~/.bashrc`, with a backup. Open a new terminal, or enable it in the current terminal:
 
 ```sh
 export PATH="$HOME/.lowlight/bin:$PATH"
@@ -81,9 +85,11 @@ To run from source without installing:
 ./run.sh --endpoint http://127.0.0.1:8080/v1 --model your-model-name
 ```
 
-With no arguments, the defaults are `http://127.0.0.1:8080/v1` and `gemma-4-e2b-it-4bit`. The client checks `GET /v1/models` before entering the connected state. If the server returns 404/405 for model listing, it can still use an explicitly supplied model name.
+With no arguments, the default endpoint is `http://127.0.0.1:8080/v1`. The client queries `GET /v1/models` before creating a session and automatically selects the sole available model. Midnight Runner reports its currently loaded model through this endpoint, so no model name is hardcoded. Discovery runs on launch and reconnect; after changing the loaded model in Runner, use `/connection reconnect`.
 
-An optional `model-stack.local.json` is discovered in the process working directory or its parent (`run.sh` uses this project's directory). No local settings file is bundled or required. `--config PATH` or `MODEL_STACK_CONFIG` selects a file explicitly; command-line options override its values for new conversations.
+A saved conversation or settings file can supply a preferred model. If it is no longer available and the server reports exactly one model, lowlight uses that model and preserves the conversation. Explicit `--model` and `/model NAME` selections are honored; an unavailable selection opens the model picker instead of sending a request with a stale name. An empty list asks you to load a model in the server, and multiple models require a selection. If model listing returns 404/405, supply a model name explicitly.
+
+Default settings live in `~/.lowlight/config/settings.json`. No settings file is required. Selection order is `--config PATH`, `LOWLIGHT_CONFIG`, legacy `MODEL_STACK_CONFIG`, then the default file. If the default file is absent, the legacy `model-stack.local.json` in the working directory or its parent remains a fallback. Command-line options override file values for new conversations.
 
 For authenticated endpoints, set `OPENAI_API_KEY`, or use `--api-key-env NAME` to select another environment variable. Supply a plain endpoint URL without embedded credentials, query parameters, or fragments. Authentication tokens are not saved in conversation records.
 
@@ -97,7 +103,7 @@ The launcher preserves the directory it was called from as the default workspace
 
 Type `/` to browse commands. Up/Down selects, Tab completes, Enter completes a partial command or runs an exact command, and Escape closes the menu. Commands with arguments and multiline drafts keep normal editing behavior.
 
-Sessions use `~/.lowlight/sessions/chat`. Profiles and skills retain their existing `.midnight` paths, documented below. See [BRANDING.md](BRANDING.md) for colors and reusable assets.
+All default installation, configuration, and data paths live under `~/.lowlight`. Legacy locations remain read fallbacks, documented below. See [BRANDING.md](BRANDING.md) for colors and reusable assets.
 
 ## Save and resume
 
@@ -153,7 +159,7 @@ Configure `/model MODEL`, `/set endpoint-url URL`, `/set context-window TOKENS`,
 /profile save local
 ```
 
-`/profile` opens a picker; `/profile use local` applies a saved profile. Profiles are JSON under `~/.midnight/profiles`. Saving an existing valid profile updates it. Invalid files are left untouched. Only the authentication environment-variable name is stored, never its value.
+`/profile` opens a picker; `/profile use local` applies a saved profile. Profiles are JSON under `~/.lowlight/config/profiles`. Existing `~/.midnight/profiles` entries remain readable; saving writes to the new location, and a new entry takes precedence over its legacy namesake. Saving an existing valid profile updates it. Invalid files are left untouched. Only the authentication environment-variable name is stored, never its value.
 
 ```sh
 lowlight --profile local
@@ -183,20 +189,22 @@ Use one prompt option at a time. A resumed conversation uses its saved instructi
 | `/system clear` | Clear the base prompt while retaining selected skills. |
 | `/skill` | Open the picker: arrows move, Space toggles, Enter applies, Escape cancels. |
 | `/skill list` | List available skills and show which are active. |
-| `/skill create NAME` | Edit a new project skill; Ctrl-S saves and Escape cancels. |
+| `/skill create NAME` | Edit a new personal skill; Ctrl-S saves and Escape cancels. |
 | `/skill use NAME` | Activate or reload a skill's instructions. |
 | `/skill off NAME` | Remove one active skill. |
 | `/skill clear` | Remove all active skills. |
 
-Instruction changes preserve the conversation and apply to the next message. Active skills are included in the system instructions and consume context tokens. Browsing the catalog does not send it to the model. Activation is explicit; saved chats retain a snapshot of each selected skill, so later edits or deletion of its source file do not silently change a resumed chat. Run `/skill use NAME` to load its current version. Creation writes `<workspace>/.midnight/skills/NAME/SKILL.md`, validates the instructions, and refuses to overwrite an existing file. Creating a skill does not activate it.
+Instruction changes preserve the conversation and apply to the next message. Active skills are included in the system instructions and consume context tokens. Browsing the catalog does not send it to the model. Activation is explicit; saved chats retain a snapshot of each selected skill, so later edits or deletion of its source file do not silently change a resumed chat. Run `/skill use NAME` to load its current version. Creation writes `~/.lowlight/skills/NAME/SKILL.md`, validates the instructions, and refuses to overwrite an existing file. Creating a skill does not activate it.
 
 Skills are discovered as `NAME/SKILL.md` beneath these roots, in precedence order:
 
-1. `<workspace>/.agents/skills`
-2. `<workspace>/.midnight/skills`
-3. `~/.agents/skills`
-4. `~/.config/midnight/skills`
-5. `~/.codex/skills`
+1. `<workspace>/.lowlight/skills`
+2. `<workspace>/.agents/skills`
+3. `<workspace>/.midnight/skills` (legacy)
+4. `~/.lowlight/skills`
+5. `~/.agents/skills`
+6. `~/.config/midnight/skills` (legacy)
+7. `~/.codex/skills`
 
 Duplicate names use the first valid match. Malformed files produce local diagnostics. A skill is a UTF-8 Markdown file, at most 128 KiB, with `name` and `description` frontmatter:
 
@@ -246,9 +254,11 @@ Startup overrides include `--max-tokens`, `--context-window`, `--context-safety-
 
 ## Interface and runtime settings
 
-Use `/help` for commands. Enter sends; Ctrl-N adds a newline. Shift-Enter also inserts a newline when the terminal reports that key combination. Up/Down recalls single-line input, and Tab completes slash commands. Page Up pauses automatic transcript following; Ctrl-F toggles following. Escape stops generation. Ctrl-C displays an exit confirmation (and stops generation); press Ctrl-C again to save and exit, or Escape to cancel. Ctrl-D or `/exit` saves and exits. Up/Down selects slash-menu items while the menu is open.
+Use `/help` for commands. Enter sends; Ctrl-N adds a newline. Shift-Enter also inserts a newline when the terminal reports that key combination. Up/Down recalls single-line input, and Tab completes slash commands. Page Up pauses automatic transcript following; Ctrl-F toggles following. Escape or Ctrl-C stops active generation or cancels a connection attempt, keeping the chat open. While idle, Ctrl-C displays an exit confirmation; press Ctrl-C again to save and exit, or Escape to cancel. Ctrl-D or `/exit` saves and exits. Up/Down selects slash-menu items while the menu is open.
 
 Use `/effort low`, `/effort medium`, `/effort high`, or `/effort default` to set the provider’s reasoning effort. This is saved with the session; provider support varies. Explicit `reasoning_content` and `reasoning` response fields appear separately under Thinking; Ctrl-T expands or hides them. Unlabeled reasoning embedded in answer text cannot be reliably separated. Assistant messages render bold, italics, headings, and code.
+
+New responses are instructed to use plain code and useful comments, without emoji badges, smileys, decorative arrows, numbered section comments, or Markdown formatting inside code. These defaults apply alongside your instructions in new and resumed chats. Code fences are hidden by the renderer; code contents are preserved literally so syntax, numeric values, and string data remain intact. Model compliance varies, and explicit requests for Unicode examples or other formatting take precedence.
 
 `/model MODEL` changes models. `/set` shows runtime settings, including:
 
@@ -261,7 +271,7 @@ Changing the model, endpoint, or context window reconnects while preserving the 
 
 ## Text to speech
 
-`/mode tts` sends ordinary input to `POST /v1/audio/speech`. Audio is saved under `tts-output/` by default; playback is not implemented. Return with `/mode chat`.
+`/mode tts` sends ordinary input to `POST /v1/audio/speech`. Audio is saved under `~/.lowlight/tts/` by default; playback is not implemented. Return with `/mode chat`.
 
 ```text
 /set tts-model tts-1
@@ -275,6 +285,10 @@ Supported formats are `mp3`, `wav`, `flac`, `opus`, `aac`, and `pcm`. The output
 ## Verification
 
 Run `swift test` for the core regression suite. After building, run `python3 scripts/terminal-smoke.py /absolute/path/to/lowlight` for the local terminal smoke test. It creates a mock loopback endpoint and temporary sessions, exercises attachment sending, retry/edit, draft recovery, model/session pickers, search, export, archive/restore, and confirmed deletion, and leaves its logs in the printed temporary directory.
+
+Run `python3 scripts/interrupt-smoke.py /absolute/path/to/lowlight` to verify Ctrl-C during silent and streaming responses, partial-answer preservation, and warning deduplication using a local fixture endpoint.
+
+Run `python3 scripts/model-discovery-smoke.py /absolute/path/to/lowlight` to check automatic model selection, reconnecting after a model change, resuming a chat with a stale model, explicit selections, empty or unsupported model lists, and drafts saved before a model is available. It also uses temporary sessions and a local fixture endpoint.
 
 ## License
 

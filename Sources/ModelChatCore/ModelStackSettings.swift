@@ -46,8 +46,10 @@ public enum ModelStackSettingsError: LocalizedError {
     }
 }
 
-private enum SettingsFileLocator {
-    static func find(explicitPath: String?) throws -> URL? {
+enum SettingsFileLocator {
+    static func find(explicitPath: String?, home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                     environment: [String: String] = ProcessInfo.processInfo.environment,
+                     workingDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)) throws -> URL? {
         let fileManager = FileManager.default
         if let explicitPath = explicitPath?.trimmingCharacters(in: .whitespacesAndNewlines),
            !explicitPath.isEmpty
@@ -59,7 +61,7 @@ private enum SettingsFileLocator {
             return url
         }
 
-        if let environmentPath = ProcessInfo.processInfo.environment["MODEL_STACK_CONFIG"],
+        if let environmentPath = environment["LOWLIGHT_CONFIG"] ?? environment["MODEL_STACK_CONFIG"],
            !environmentPath.isEmpty
         {
             let url = normalizedURL(environmentPath)
@@ -69,11 +71,8 @@ private enum SettingsFileLocator {
             return url
         }
 
-        let workingDirectory = URL(
-            fileURLWithPath: fileManager.currentDirectoryPath,
-            isDirectory: true
-        )
         let candidates = [
+            home.appendingPathComponent(".lowlight/config/settings.json"),
             workingDirectory.appendingPathComponent("model-stack.local.json"),
             workingDirectory
                 .deletingLastPathComponent()

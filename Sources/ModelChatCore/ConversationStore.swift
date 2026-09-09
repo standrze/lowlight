@@ -11,6 +11,7 @@ public struct SavedConversation: Codable, Equatable, Sendable, Identifiable {
     public var title: String
     public var createdAt: Date
     public var updatedAt: Date
+    /// The selected model, or empty for a draft created before discovery succeeds.
     public var model: String
     public var endpoint: String
     public var workspacePath: String
@@ -91,7 +92,8 @@ public struct SavedConversation: Codable, Equatable, Sendable, Identifiable {
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ConversationStoreError.invalidRecord("The conversation title is empty.")
         }
-        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || (context == .init() && transcript.messages.allSatisfy { $0.role == .notice }) else {
             throw ConversationStoreError.invalidRecord("The model name is empty.")
         }
         guard !workspacePath.isEmpty, (workspacePath as NSString).isAbsolutePath else {

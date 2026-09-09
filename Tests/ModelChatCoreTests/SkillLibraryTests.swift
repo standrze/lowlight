@@ -28,12 +28,12 @@ private struct SkillFixture {
 }
 
 @Test
-func creatingSkillWritesProjectFileAndRefusesOverwrite() throws {
+func creatingSkillWritesPersonalFileAndRefusesOverwrite() throws {
     let fixture = try SkillFixture()
     defer { fixture.remove() }
     let markdown = "---\nname: notes\ndescription: Summarize notes.\n---\nPreserve decisions and dates."
     let created = try fixture.library.create(name: "notes", markdown: markdown)
-    #expect(created.sourcePath.hasSuffix("/.midnight/skills/notes/SKILL.md"))
+    #expect(created.sourcePath == fixture.home.appendingPathComponent(".lowlight/skills/notes/SKILL.md").path)
     #expect(try fixture.library.load(name: "notes").body == "Preserve decisions and dates.")
     #expect(throws: (any Error).self) {
         try fixture.library.create(name: "notes", markdown: markdown + "\nReplacement.")
@@ -51,7 +51,7 @@ func creatingSkillValidatesBeforeWriting() throws {
     #expect(throws: (any Error).self) {
         try fixture.library.create(name: "notes", markdown: "---\nname: other\ndescription: Notes\n---\nInstructions")
     }
-    #expect(!FileManager.default.fileExists(atPath: fixture.workspace.appendingPathComponent(".midnight").path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.home.appendingPathComponent(".lowlight").path))
 }
 
 @Test

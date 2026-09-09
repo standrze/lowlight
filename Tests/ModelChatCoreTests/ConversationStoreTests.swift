@@ -60,6 +60,67 @@ func savedConversationRoundTripsPromptSkillsContextAndTranscript() throws {
 }
 
 @Test
+func anUnconnectedDraftRoundTripsWithoutInventingAModel() throws {
+    try withConversationStore { store in
+        var expected = savedConversation()
+        expected.model = ""
+        expected.draft = "Keep this draft while I choose a model."
+        expected.transcript.addNotice("Choose a model before sending.")
+
+        let url = try store.save(expected)
+        let resumed = try store.load(expected.id.uuidString)
+        let json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+
+        #expect(resumed == expected)
+        #expect(resumed.model.isEmpty)
+        #expect(json["model"] as? String == "")
+        #expect(try store.list().first?.model == "")
+        #expect(try store.warnings().isEmpty)
+    }
+}
+
+@Test(arguments: [ChatRole.user, .assistant])
+func aTranscriptMessageRequiresAModelEvenWithoutCompletedContext(role: ChatRole) throws {
+    try withConversationStore { store in
+        var conversation = savedConversation()
+        conversation.model = ""
+        conversation.draft = "An unsent draft does not make earlier turns model-less."
+        conversation.transcript = ChatTranscript(messages: [
+            ChatMessage(role: role, text: "A previous conversation message")
+        ])
+
+        #expect(throws: ConversationStoreError.self) {
+            try store.save(conversation)
+        }
+        let saved = try store.list()
+        #expect(saved.isEmpty)
+    }
+}
+
+@Test
+func savedModelContextRequiresAModelEvenWithOnlyLocalNotices() throws {
+    try withConversationStore { store in
+        let previousContexts = [
+            ConversationContextState(turns: [ConversationTurn(user: "Hello", assistant: "Hi")]),
+            ConversationContextState(summary: "Earlier conversation summary"),
+            ConversationContextState(totalOmittedTurns: 1)
+        ]
+        for context in previousContexts {
+            var conversation = savedConversation()
+            conversation.model = ""
+            conversation.context = context
+            conversation.transcript.addNotice("Local notice")
+
+            #expect(throws: ConversationStoreError.self) {
+                try store.save(conversation)
+            }
+        }
+        let saved = try store.list()
+        #expect(saved.isEmpty)
+    }
+}
+
+@Test
 func resumingAnInterruptedResponseKeepsPartialTextOutOfCompletedContext() throws {
     try withConversationStore { store in
         var conversation = savedConversation()

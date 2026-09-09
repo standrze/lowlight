@@ -41,8 +41,8 @@ public struct SkillLibraryError: LocalizedError, Sendable {
 
 /// Reads only SKILL.md files one directory below the configured roots.
 ///
-/// Precedence, highest first: workspace .agents, workspace .midnight, personal
-/// .agents, personal .config/midnight, personal .codex. Duplicate names never merge.
+/// Workspace instructions precede personal skills; legacy roots remain readable.
+/// Duplicate names never merge.
 /// This supports instruction files, not plugin installation or script execution.
 public struct SkillLibrary: Sendable {
     public static let maximumFileBytes = 128 * 1_024
@@ -50,10 +50,12 @@ public struct SkillLibrary: Sendable {
     private let creationRoot: URL
 
     public init(workspace: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        creationRoot = workspace.appendingPathComponent(".midnight/skills", isDirectory: true).standardizedFileURL
+        creationRoot = home.appendingPathComponent(".lowlight/skills", isDirectory: true).standardizedFileURL
         roots = [
+            workspace.appendingPathComponent(".lowlight/skills", isDirectory: true),
             workspace.appendingPathComponent(".agents/skills", isDirectory: true),
             workspace.appendingPathComponent(".midnight/skills", isDirectory: true),
+            home.appendingPathComponent(".lowlight/skills", isDirectory: true),
             home.appendingPathComponent(".agents/skills", isDirectory: true),
             home.appendingPathComponent(".config/midnight/skills", isDirectory: true),
             home.appendingPathComponent(".codex/skills", isDirectory: true),
@@ -89,7 +91,7 @@ public struct SkillLibrary: Sendable {
         guard isValidName(name) else { throw invalid("Use 1–64 lowercase letters, digits, and single hyphens for the skill name.") }
     }
 
-    /// Creates only a new project instruction file. Existing files are never replaced.
+    /// Creates only a new personal instruction file. Existing files are never replaced.
     public func create(name: String, markdown: String) throws -> SkillDocument {
         try validateNewName(name)
         let file = creationRoot.appendingPathComponent(name).appendingPathComponent("SKILL.md")

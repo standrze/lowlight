@@ -13,6 +13,7 @@ Release bundles install without a Swift toolchain.
   --binary PATH         Install a prebuilt executable without building.
                         Its SwiftPM resource bundles must be beside it.
   --prefix PATH         Installation home (default: ~/.lowlight).
+  --no-modify-path      Do not update shell PATH.
   --help                Show this help.
 
 The stable command is PREFIX/bin/lowlight. Each install stages a complete
@@ -29,7 +30,8 @@ Creates bin, lib, logs, and sessions/chat without replacing their
 existing contents. --prefix changes the installation layout only; chat data
 defaults to ~/.lowlight/sessions/chat and also reads previous session locations.
 Use the application's --sessions-directory option for another session location.
-No shell profile or startup items change.
+Adds bin to the current shell’s startup file, with a backup before editing.
+Use --no-modify-path to manage PATH yourself.
 HELP
 }
 
@@ -116,6 +118,7 @@ PREFIX_SET=false
 CONFIGURATION=debug
 CONFIGURATION_SET=false
 BINARY=
+UPDATE_PATH="${LOWLIGHT_MODIFY_PATH:-true}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -135,6 +138,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 && -n "$2" ]] || fail '--binary requires a path'
       BINARY="$2"
       shift 2
+      ;;
+    --no-modify-path)
+      UPDATE_PATH=false
+      shift
       ;;
     --help|-h)
       usage
@@ -168,7 +175,7 @@ BINARY="$BINARY_DIRECTORY/$(basename "$BINARY")"
 umask 077
 mkdir -p "$PREFIX"
 PREFIX="$(CDPATH= cd "$PREFIX" && pwd -P)"
-mkdir -p "$PREFIX/lib" "$PREFIX/bin" "$PREFIX/logs" "$PREFIX/sessions/chat"
+mkdir -p "$PREFIX/lib" "$PREFIX/bin" "$PREFIX/logs" "$PREFIX/sessions/chat" "$PREFIX/config/profiles" "$PREFIX/skills" "$PREFIX/tts"
 LOCK_DIRECTORY="$PREFIX/lib/.lowlight-install.lock"
 mkdir "$LOCK_DIRECTORY" 2>/dev/null || fail "another install may be running; lock exists at $LOCK_DIRECTORY"
 
@@ -265,3 +272,26 @@ case ":$PATH:" in
   *":$PREFIX/bin:"*) ;;
   *) printf 'Add this directory to your shell PATH: %s\n' "$PREFIX/bin" ;;
 esac
+
+if [[ "$UPDATE_PATH" == true ]]; then
+  case "${SHELL:-}" in
+    */zsh) RC="$HOME/.zshrc" ;;
+    */bash) RC="$HOME/.bashrc" ;;
+    *) RC= ;;
+  esac
+  if [[ -n "$RC" ]]; then
+    if [[ "$PREFIX_SET" == false || "$PREFIX" == "$HOME/.lowlight" ]]; then
+      ENTRY='export PATH="$HOME/.lowlight/bin:$PATH"'
+    else
+      printf -v ENTRY 'export PATH=%q:"$PATH"' "$PREFIX/bin"
+    fi
+    if ! grep -Fqx "$ENTRY" "$RC" 2>/dev/null; then
+      mkdir -p "$PREFIX/backups"
+      if [[ -f "$RC" ]]; then cp -p "$RC" "$PREFIX/backups/$(basename "$RC").before-lowlight.$(date +%Y%m%d%H%M%S).$$"; fi
+      printf '\n# lowlight\n%s\n' "$ENTRY" >> "$RC"
+    fi
+    printf 'PATH configured in %s. Open a new terminal, then run lowlight.\n' "$RC"
+  else
+    printf 'Add %s to your shell PATH, then run lowlight.\n' "$PREFIX/bin"
+  fi
+fi

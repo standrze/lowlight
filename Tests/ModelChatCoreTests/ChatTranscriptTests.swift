@@ -61,3 +61,15 @@ func localNoticesRemainDistinctFromModelTurns() {
     #expect(transcript.messages[0].text == "Context is at 50%.")
     #expect(transcript.messages[0].state == .complete)
 }
+
+@Test func repeatedWarningsDoNotAccumulateUntilAnotherTurn() {
+    var transcript = ChatTranscript()
+    transcript.addNotice("Context exceeds server limit.")
+    transcript.addNotice("Connection unavailable.")
+    transcript.addNotice("Context exceeds server limit.")
+    #expect(transcript.messages.count == 2)
+    let response = transcript.beginTurn(prompt: "Hello")
+    transcript.finish(responseID: response)
+    transcript.addNotice("Context exceeds server limit.")
+    #expect(transcript.messages.count == 5)
+}

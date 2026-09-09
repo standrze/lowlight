@@ -47,8 +47,10 @@ public struct ConnectionProfile: Codable, Equatable, Sendable, Identifiable {
 
 public struct ConnectionProfileStore: Sendable {
     public let directory: URL
-    public init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".midnight/profiles")) {
-        self.directory = directory
+    private let fallbackDirectory: URL?
+    public init(directory: URL? = nil, home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.directory = directory ?? home.appendingPathComponent(".lowlight/config/profiles")
+        self.fallbackDirectory = directory == nil ? home.appendingPathComponent(".midnight/profiles") : nil
     }
 
     public static func validateName(_ name: String) throws {
@@ -60,7 +62,12 @@ public struct ConnectionProfileStore: Sendable {
 
     public func load(_ name: String) throws -> ConnectionProfile {
         try Self.validateName(name)
-        let url = directory.appendingPathComponent(name + ".json")
+        var url = directory.appendingPathComponent(name + ".json")
+        if !FileManager.default.fileExists(atPath: url.path),
+           (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+           let fallbackDirectory {
+            url = fallbackDirectory.appendingPathComponent(name + ".json")
+        }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? 0) <= 32_768 else {
             throw ConversationFeatureError.message("A profile must be a regular JSON file under 32 KiB.")
@@ -72,10 +79,15 @@ public struct ConnectionProfileStore: Sendable {
     }
 
     public func list() throws -> (profiles: [ConnectionProfile], warnings: [String]) {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return ([], []) }
-        let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let directories = [directory] + (fallbackDirectory.map { [$0] } ?? [])
+        var urls: [URL] = []
+        for folder in directories where FileManager.default.fileExists(atPath: folder.path) {
+            urls += try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        }
+        var seen = Set<String>()
         var profiles: [ConnectionProfile] = [], warnings: [String] = []
         for url in urls.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where url.pathExtension == "json" {
+            guard seen.insert(url.lastPathComponent).inserted else { continue }
             do { profiles.append(try load(url.deletingPathExtension().lastPathComponent)) }
             catch { warnings.append("Skipped \(url.lastPathComponent): \(error.localizedDescription)") }
         }

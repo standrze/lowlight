@@ -104,6 +104,9 @@ public struct ChatTranscript: Codable, Equatable, Sendable {
     }
 
     public mutating func addNotice(_ text: String) {
+        // Repeated sends/reconnects can report the same unresolved condition.
+        // Keep one copy until a conversation turn separates the notices.
+        guard !messages.reversed().prefix(while: { $0.role == .notice }).contains(where: { $0.text == text }) else { return }
         messages.append(ChatMessage(role: .notice, text: text))
     }
 
