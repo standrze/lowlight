@@ -33,6 +33,8 @@ public struct SavedConversation: Codable, Equatable, Sendable, Identifiable {
     public var archived: Bool?
     public var parentID: UUID?
     public var apiKeyEnvironment: String?
+    /// API preference only. Server response IDs are transient and never persisted.
+    public var api: OpenAIAPI?
 
     public init(
         id: UUID = UUID(),
@@ -57,7 +59,8 @@ public struct SavedConversation: Codable, Equatable, Sendable, Identifiable {
         pendingAttachments: [ChatAttachment]? = nil,
         archived: Bool? = nil,
         parentID: UUID? = nil,
-        apiKeyEnvironment: String? = nil
+        apiKeyEnvironment: String? = nil,
+        api: OpenAIAPI? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.id = id
@@ -83,6 +86,7 @@ public struct SavedConversation: Codable, Equatable, Sendable, Identifiable {
         self.archived = archived
         self.parentID = parentID
         self.apiKeyEnvironment = apiKeyEnvironment
+        self.api = api
     }
 
     public func validate() throws {

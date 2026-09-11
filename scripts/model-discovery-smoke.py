@@ -125,7 +125,7 @@ def launch(name, model=None, resume=None):
     sessions.mkdir(exist_ok=True)
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 130, 0, 0))
-    args = [binary, "--config", str(config), "--endpoint", endpoint,
+    args = [binary, "--api", "chat-completions", "--config", str(config), "--endpoint", endpoint,
             "--api-key-env", "LOWLIGHT_SMOKE_UNUSED_KEY", "--context-window", "8192",
             "--workspace", str(workspace), "--sessions-directory", str(sessions)]
     if model is not None:

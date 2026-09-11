@@ -76,6 +76,32 @@ struct CheckpointSessionTests {
         #expect(fixture.requests.count == 2)
     }
 
+    @Test("An empty answer at the output limit rolls back prepared notes and records both requests' usage")
+    func emptyFinalAnswerRollbackAndUsage() async throws {
+        let checkpointUsage = OpenAIUsage(promptTokens: 100, completionTokens: 8, totalTokens: 108)
+        let answerUsage = OpenAIUsage(promptTokens: 80, completionTokens: 128, totalTokens: 208)
+        let (session, fixture) = try makeSession(replies: [
+            .text("Valid notes", usage: checkpointUsage),
+            .text("", finishReason: "length", usage: answerUsage),
+        ])
+        let original = history()
+        try await session.restoreContext(original)
+
+        await #expect(throws: EndpointSessionError.outputLimitReached) {
+            try await session.generate(responseTo: "continue", onChunk: { _ in })
+        }
+
+        #expect(await session.exportContext() == original)
+        #expect(fixture.requests.count == 2)
+        #expect(fixture.requests[1].messages[2].content?.contains("Valid notes") == true)
+        let usage = await session.usageSnapshot()
+        #expect(usage.reportedRequests == 2)
+        #expect(usage.promptTokens == 180)
+        #expect(usage.completionTokens == 136)
+        #expect(usage.totalTokens == 316)
+        #expect(usage.lastRequest == answerUsage)
+    }
+
     @Test("Cancellation rolls back prepared notes and prevents concurrent context edits")
     func cancellationRollback() async throws {
         let (session, fixture) = try makeSession(replies: [.text("Valid notes"), .hold])
@@ -173,7 +199,7 @@ struct CheckpointSessionTests {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CheckpointURLProtocol.self]
         let session = try EndpointModelSession(
-            model: "test-model", endpoint: "https://\(host)/v1", maximumTokens: 128,
+            model: "test-model", endpoint: "https://\(host)/v1", api: .chatCompletions, maximumTokens: 128,
             contextWindowTokens: window, contextSafetyReserveTokens: 0, contextCompactAtPercent: 100,
             contextStrategy: .checkpoint, systemPrompt: "Canonical instructions",
             urlSession: URLSession(configuration: configuration)
@@ -194,7 +220,7 @@ private final class CompactionProgressRecorder {
 }
 
 private enum CheckpointReply: Sendable {
-    case text(String, finishReason: String = "stop")
+    case text(String, finishReason: String = "stop", usage: OpenAIUsage? = nil)
     case status(Int)
     case hold
 }
@@ -258,11 +284,12 @@ private final class CheckpointURLProtocol: URLProtocol, @unchecked Sendable {
             case .status(let code):
                 status = code
                 data = Data()
-            case .text(let text, let finishReason):
+            case .text(let text, let finishReason, let usage):
                 status = 200
                 let chunk = ChatCompletionChunk(
                     id: "checkpoint-test", model: "test-model",
-                    choices: [.init(delta: .init(content: text), finishReason: finishReason)]
+                    choices: [.init(delta: .init(content: text), finishReason: finishReason)],
+                    usage: usage
                 )
                 data = Data("data: \(String(decoding: try JSONEncoder().encode(chunk), as: UTF8.self))\n\ndata: [DONE]\n\n".utf8)
             }

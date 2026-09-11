@@ -1,4 +1,5 @@
 import Foundation
+import ModelTransport
 
 public struct ModelStackSettings: Decodable, Sendable {
     public struct Chat: Decodable, Sendable {
@@ -12,6 +13,7 @@ public struct ModelStackSettings: Decodable, Sendable {
 
         public let endpoint: String?
         public let model: String?
+        public let api: OpenAIAPI?
         public let apiKeyEnvironment: String?
         public let maximumTokens: Int?
         public let audioOutputDirectory: String?

@@ -58,7 +58,7 @@ struct TranscriptRow: View {
                     Text("\(showThinking ? "▾" : "▸") Thinking · ctrl-t to \(showThinking ? "hide" : "show")")
                         .foregroundStyle(palette.muted)
                     if showThinking {
-                        Text(reasoning).foregroundStyle(palette.muted).padding(.leading, 2)
+                        Text(reasoning).italic().foregroundStyle(palette.muted).padding(.leading, 2)
                     }
                     if !message.text.isEmpty { Text(" ") }
                 }
@@ -97,5 +97,16 @@ struct TranscriptRow: View {
             interpolation.appendInterpolation(text)
         }
         return Text(Text.RichContent(stringInterpolation: interpolation))
+    }
+}
+
+extension TranscriptRow: @MainActor Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        guard lhs.message == rhs.message, lhs.showThinking == rhs.showThinking else { return false }
+        // Completed rows stay reusable while another response advances its timer.
+        // SwiftTUI checks the environment snapshot separately before reusing a row.
+        let showsElapsedTime = lhs.message.role == .assistant
+            && lhs.message.state == .streaming && lhs.message.text.isEmpty
+        return !showsElapsedTime || lhs.elapsedSeconds == rhs.elapsedSeconds
     }
 }

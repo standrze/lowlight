@@ -5,6 +5,8 @@ public struct ConnectionProfile: Codable, Equatable, Sendable, Identifiable {
     public var name: String
     public var endpoint: String
     public var model: String
+    /// Omitted by older profiles; new connections default to automatic selection.
+    public var api: OpenAIAPI?
     public var apiKeyEnvironment: String
     public var contextWindow: Int
     public var maximumTokens: Int
@@ -15,8 +17,10 @@ public struct ConnectionProfile: Codable, Equatable, Sendable, Identifiable {
 
     public init(name: String, endpoint: String, model: String, apiKeyEnvironment: String = "OPENAI_API_KEY",
                 contextWindow: Int = 32_768, maximumTokens: Int = 512, safetyReserve: Int = 1_024,
-                compactAtPercent: Int = 90, reasoningEffort: ReasoningEffort? = nil) {
+                compactAtPercent: Int = 90, reasoningEffort: ReasoningEffort? = nil,
+                api: OpenAIAPI? = nil) {
         self.name = name; self.endpoint = endpoint; self.model = model
+        self.api = api
         self.apiKeyEnvironment = apiKeyEnvironment; self.contextWindow = contextWindow
         self.maximumTokens = maximumTokens; self.safetyReserve = safetyReserve
         self.compactAtPercent = compactAtPercent; self.reasoningEffort = reasoningEffort

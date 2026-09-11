@@ -16,8 +16,12 @@ public struct UsageSnapshot: Equatable, Sendable {
 public actor EndpointModelSession {
     public nonisolated let modelPath: String
     public nonisolated let endpoint: String
+    public nonisolated let api: OpenAIAPI
 
     private let chatURL: URL
+    private let responsesURL: URL
+    private var resolvedAPI: OpenAIAPI?
+    private var responseContinuation: ResponseContinuation?
     private let speechURL: URL
     private let apiKey: String?
     private let maximumTokens: Int
@@ -37,6 +41,7 @@ public actor EndpointModelSession {
         model: String,
         endpoint: String,
         apiKey: String? = nil,
+        api: OpenAIAPI = .auto,
         maximumTokens: Int = 512,
         contextWindowTokens: Int = 32_768,
         contextSafetyReserveTokens: Int = 1_024,
@@ -51,6 +56,8 @@ public actor EndpointModelSession {
 
         self.modelPath = trimmedModel
         self.endpoint = endpoint
+        self.api = api
+        self.responsesURL = try OpenAIEndpoint.responsesURL(from: endpoint)
         self.chatURL = try OpenAIEndpoint.chatCompletionsURL(from: endpoint)
         self.speechURL = try OpenAIEndpoint.speechURL(from: endpoint)
         self.apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -105,13 +112,13 @@ public actor EndpointModelSession {
         let contextPlan = try candidate.makePlan(currentPrompt: prompt)
         try ensureActive(generationID)
         _ = try candidate.validateRequest(messages: contextPlan.messages)
-        let stream = try await requestCompletion(messages: contextPlan.messages, reasoningEffort: reasoningEffort, onReasoning: onReasoning, onChunk: onChunk)
+        let stream = try await requestCompletion(messages: contextPlan.messages, continueConversation: true, reasoningEffort: reasoningEffort, onReasoning: onReasoning, onChunk: onChunk)
         try ensureActive(generationID)
-        guard !stream.answer.isEmpty else { throw EndpointSessionError.emptyResponse }
         recordUsage(stream.usage)
         if let performance = stream.performance {
             lastPerformance = performance
         }
+        try stream.validateCompletion()
         try Task.checkCancellation()
         let snapshot = try candidate.commit(
             contextPlan,
@@ -119,6 +126,14 @@ public actor EndpointModelSession {
             assistantResponse: stream.answer
         )
         contextManager = candidate
+        // IDs are an in-memory optimization. Only publish one after local history commits.
+        if let id = stream.responseID, stream.finishReason == "stop" {
+            responseContinuation = ResponseContinuation(
+                id: id, messages: contextPlan.messages + [.init(role: "assistant", content: stream.answer)]
+            )
+        } else {
+            responseContinuation = nil
+        }
         return ContextGenerationReport(
             context: snapshot,
             requestEstimatedTokens: contextPlan.estimatedInputTokens,
@@ -129,8 +144,12 @@ public actor EndpointModelSession {
     @discardableResult
     public func clear() -> ContextSnapshot {
         guard !isGenerating else { return contextManager.snapshot() }
+        responseContinuation = nil
         return contextManager.clear()
     }
+
+    /// Auto resolves on the first generation; reconnecting creates a fresh session.
+    public func activeAPI() -> OpenAIAPI { resolvedAPI ?? api }
 
     public func contextSnapshot() -> ContextSnapshot {
         contextManager.snapshot()
@@ -146,6 +165,7 @@ public actor EndpointModelSession {
         guard !isGenerating else { throw EndpointSessionError.busy }
         try state.validate()
         contextManager = ContextWindowManager(policy: contextManager.policy, state: state)
+        responseContinuation = nil
         return contextManager.snapshot()
     }
 
@@ -153,7 +173,9 @@ public actor EndpointModelSession {
     public func updateSystemPrompt(_ prompt: String?) throws -> ContextSnapshot {
         guard !isShutdown else { throw EndpointSessionError.shutdown }
         guard !isGenerating else { throw EndpointSessionError.busy }
-        return try contextManager.updateSystemPrompt(prompt)
+        let snapshot = try contextManager.updateSystemPrompt(prompt)
+        responseContinuation = nil
+        return snapshot
     }
 
     /// Replaces older active turns with model-written notes; the UI transcript is untouched.
@@ -173,6 +195,7 @@ public actor EndpointModelSession {
         )
         try ensureActive(generationID)
         contextManager = candidate
+        responseContinuation = nil
         return candidate.snapshot()
     }
 
@@ -265,6 +288,7 @@ public actor EndpointModelSession {
     public func shutdown() {
         isShutdown = true
         activeGeneration = nil
+        responseContinuation = nil
     }
 
     private func ensureActive(_ generationID: UUID) throws {
@@ -371,51 +395,126 @@ public actor EndpointModelSession {
     static func sseData(from line: String) -> String? {
         guard line.hasPrefix("data:") else { return nil }
         return String(line.dropFirst("data:".count))
-            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func requestCompletion(
         messages: [OpenAIMessage],
         maximumTokens: Int? = nil,
+        continueConversation: Bool = false,
         reasoningEffort: ReasoningEffort? = nil,
         onReasoning: @escaping @MainActor @Sendable (String) -> Void = { _ in },
         onChunk: @escaping @MainActor @Sendable (String) -> Void
-    ) async throws -> OpenAIStreamState {
-        let payload = ChatCompletionRequest(
-            model: modelPath,
-            messages: messages,
-            stream: true,
-            maxTokens: maximumTokens ?? self.maximumTokens,
-            temperature: 0,
-            streamOptions: .init(includeUsage: true),
-            reasoningEffort: reasoningEffort
-        )
+    ) async throws -> EndpointCompletion {
+        var selected = resolvedAPI ?? (api == .auto ? .responses : api)
+        var previous = continueConversation ? responseContinuation : nil
+        // Sliding windows, checkpoints and edited histories must not inherit omitted turns.
+        if let cursor = previous,
+           messages.count <= cursor.messages.count || !messages.starts(with: cursor.messages) {
+            previous = nil
+        }
+        var retriedWithoutPrevious = false
+        while true {
+            try Task.checkCancellation()
+            guard !isShutdown else { throw EndpointSessionError.shutdown }
+            let input = previous.map { Array(messages.dropFirst($0.messages.count)) } ?? messages
+            do {
+                let completion = try await performCompletion(
+                    api: selected, messages: selected == .responses ? input : messages,
+                    maximumTokens: maximumTokens ?? self.maximumTokens,
+                    previousResponseID: previous?.id, store: continueConversation,
+                    reasoningEffort: reasoningEffort, onReasoning: onReasoning, onChunk: onChunk
+                )
+                resolvedAPI = selected
+                return completion
+            } catch let error as CompletionHTTPError {
+                // A server restart/expiry must not make a locally saved chat unusable.
+                if selected == .responses, previous != nil, !retriedWithoutPrevious,
+                   error.isMissingPreviousResponse {
+                    previous = nil
+                    responseContinuation = nil
+                    retriedWithoutPrevious = true
+                    continue
+                }
+                // Only pre-generation route errors are safe to retry using another API.
+                if api == .auto, selected == .responses, error.isUnsupportedRoute {
+                    selected = .chatCompletions
+                    resolvedAPI = selected
+                    previous = nil
+                    responseContinuation = nil
+                    continue
+                }
+                throw error.sessionError
+            }
+        }
+    }
 
-        var request = URLRequest(url: chatURL)
+    private func performCompletion(
+        api: OpenAIAPI,
+        messages: [OpenAIMessage],
+        maximumTokens: Int,
+        previousResponseID: String?,
+        store: Bool,
+        reasoningEffort: ReasoningEffort?,
+        onReasoning: @escaping @MainActor @Sendable (String) -> Void,
+        onChunk: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> EndpointCompletion {
+        let encoder = JSONEncoder()
+        let payload: Data
+        if api == .responses {
+            payload = try encoder.encode(ResponsesRequest(
+                model: modelPath, input: messages, store: store,
+                previousResponseID: previousResponseID, maxOutputTokens: maximumTokens,
+                temperature: 0, reasoningEffort: reasoningEffort
+            ))
+        } else {
+            payload = try encoder.encode(ChatCompletionRequest(
+                model: modelPath, messages: messages, stream: true, maxTokens: maximumTokens,
+                temperature: 0, streamOptions: .init(includeUsage: true), reasoningEffort: reasoningEffort
+            ))
+        }
+        var request = URLRequest(url: api == .responses ? responsesURL : chatURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         if let apiKey, !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try JSONEncoder().encode(payload)
+        request.httpBody = payload
+        // Local reasoning models may produce no public events while thinking.
+        request.timeoutInterval = 600
 
         do {
-            let transport = HTTPResponseStream(request: request, configuration: urlSession.configuration)
+            let configuration = urlSession.configuration
+            configuration.timeoutIntervalForResource = 1_800
+            let transport = HTTPResponseStream(request: request, configuration: configuration)
             defer { transport.cancel() }
             var status: Int?
             var errorBody = Data()
             var lines = SSELineBuffer()
-            var streamState = OpenAIStreamState()
+            var frames = SSEDataBuffer()
+            var chat = OpenAIStreamState()
+            var response = ResponsesStreamState()
             var sawDone = false
 
-            func consume(_ line: String, isolation: isolated (any Actor)? = #isolation) async throws -> Bool {
+            func consume(_ dataString: String, isolation: isolated (any Actor)? = #isolation) async throws -> Bool {
                 try Task.checkCancellation()
-                guard let dataString = Self.sseData(from: line) else { return false }
-                let chunks = try streamState.consume(dataString)
-                for reasoning in streamState.reasoningChunks { await onReasoning(reasoning) }
+                let chunks: [String]
+                let reasoning: [String]
+                let terminal: Bool
+                if api == .responses {
+                    chunks = try response.consume(dataString)
+                    reasoning = response.reasoningChunks
+                    terminal = response.reachedTerminalEvent
+                } else {
+                    chunks = try chat.consume(dataString)
+                    reasoning = chat.reasoningChunks
+                    // Chat usage may arrive after finish_reason, before [DONE].
+                    terminal = dataString == "[DONE]"
+                }
+                for chunk in reasoning { await onReasoning(chunk) }
                 for content in chunks { await onChunk(content) }
-                return dataString == "[DONE]"
+                return terminal
             }
 
             events: for try await event in transport.events {
@@ -430,7 +529,10 @@ public actor EndpointModelSession {
                         if errorBody.count == 8_192 { break events }
                     } else {
                         for line in lines.append(data) {
-                            if try await consume(line) { sawDone = true; break events }
+                            if let dataString = frames.append(line), try await consume(dataString) {
+                                sawDone = true
+                                break events
+                            }
                         }
                     }
                 }
@@ -438,23 +540,101 @@ public actor EndpointModelSession {
             try Task.checkCancellation()
             guard let status else { throw EndpointSessionError.invalidResponse }
             guard (200..<300).contains(status) else {
-                if let envelope = try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: errorBody) {
-                    throw EndpointSessionError.server("HTTP \(status): \(envelope.error.message)")
-                }
-                throw EndpointSessionError.httpStatus(status)
+                let detail = (try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: errorBody))?.error
+                throw CompletionHTTPError(status: status, detail: detail)
             }
             if !sawDone {
                 for line in lines.finish() {
-                    if try await consume(line) { break }
+                    if let dataString = frames.append(line), try await consume(dataString) {
+                        sawDone = true
+                        break
+                    }
+                }
+                if !sawDone, let dataString = frames.finish() {
+                    _ = try await consume(dataString)
                 }
             }
-
             try Task.checkCancellation()
-            try streamState.validateCompletion()
-            return streamState
+            if api == .responses {
+                try response.validateTerminalEvent()
+                return EndpointCompletion(answer: response.answer, finishReason: response.finishReason,
+                    usage: response.usage, performance: response.performance, responseID: store ? response.responseID : nil)
+            }
+            try chat.validateTerminalEvent()
+            return EndpointCompletion(answer: chat.answer, finishReason: chat.finishReason,
+                usage: chat.usage, performance: chat.performance, responseID: nil)
         } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()
         }
+    }
+
+}
+
+private struct ResponseContinuation {
+    let id: String
+    let messages: [OpenAIMessage]
+}
+
+private struct EndpointCompletion {
+    let answer: String
+    let finishReason: String?
+    let usage: OpenAIUsage?
+    let performance: ModelRunnerPerformance?
+    let responseID: String?
+
+    func validateCompletion() throws {
+        guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            if finishReason == "length" { throw EndpointSessionError.outputLimitReached }
+            throw EndpointSessionError.emptyResponse
+        }
+    }
+}
+
+private struct CompletionHTTPError: Error {
+    let status: Int
+    let detail: OpenAIErrorEnvelope.Detail?
+
+    var isMissingPreviousResponse: Bool {
+        [400, 404].contains(status) && (detail?.param == "previous_response_id"
+            || ["response_not_found", "previous_response_not_found"].contains(detail?.code ?? ""))
+    }
+
+    var isUnsupportedRoute: Bool {
+        guard [404, 405].contains(status), detail?.param == nil else { return false }
+        if let code = detail?.code,
+           !["not_found", "route_not_found", "unknown_endpoint", "unsupported_endpoint", "method_not_allowed"].contains(code) {
+            return false
+        }
+        // Some older servers omit machine-readable model error codes.
+        return !(detail?.message.lowercased().contains("model") ?? false)
+    }
+
+    var sessionError: EndpointSessionError {
+        if let detail { return .server("HTTP \(status): \(detail.message)") }
+        return .httpStatus(status)
+    }
+}
+
+/// Join all data fields in one SSE event; comments, event names and IDs are metadata.
+struct SSEDataBuffer {
+    private var dataLines: [String] = []
+
+    mutating func append(_ rawLine: String) -> String? {
+        let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
+        if line.isEmpty { return finish() }
+        if line == "data" { dataLines.append("") }
+        else if line.hasPrefix("data:") {
+            var value = String(line.dropFirst(5))
+            if value.hasPrefix(" ") { value.removeFirst() }
+            dataLines.append(value)
+        }
+        return nil
+    }
+
+    mutating func finish() -> String? {
+        guard !dataLines.isEmpty else { return nil }
+        defer { dataLines.removeAll(keepingCapacity: true) }
+        return dataLines.joined(separator: "\n")
     }
 }
 
@@ -503,9 +683,16 @@ struct OpenAIStreamState {
         return contents
     }
 
-    func validateCompletion() throws {
+    func validateTerminalEvent() throws {
         guard reachedTerminalEvent else { throw EndpointSessionError.incompleteStream }
-        guard !answer.isEmpty else { throw EndpointSessionError.emptyResponse }
+    }
+
+    func validateCompletion() throws {
+        try validateTerminalEvent()
+        guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            if finishReason == "length" { throw EndpointSessionError.outputLimitReached }
+            throw EndpointSessionError.emptyResponse
+        }
     }
 }
 
@@ -518,6 +705,7 @@ public enum EndpointSessionError: LocalizedError, Equatable {
     case server(String)
     case incompleteStream
     case emptyResponse
+    case outputLimitReached
     case shutdown
     case incompleteCheckpoint
     case oversizedCheckpoint
@@ -530,10 +718,14 @@ public enum EndpointSessionError: LocalizedError, Equatable {
         case .busy: "A response is already being generated."
         case .invalidResponse: "The model endpoint returned an invalid response."
         case .httpStatus(let status): "The model endpoint returned HTTP \(status)."
+        case .server(let message) where message == "The model ended the turn without producing text.":
+            message + " The output token limit may be too small for this model's reasoning. Check both the server and Lowlight output limits. Once the server permits 4096 tokens, use /set max-tokens 4096, then /retry."
         case .server(let message): message
         case .incompleteStream:
             "The endpoint closed the stream before sending a completion marker."
         case .emptyResponse: "The endpoint ended the turn without producing text."
+        case .outputLimitReached:
+            "The model reached the output token limit before producing an answer. Reasoning uses the same output budget. Use /set max-tokens N with a larger limit, then /retry."
         case .shutdown: "The model session has been shut down."
         case .incompleteCheckpoint:
             "The model did not finish the checkpoint normally. The conversation has been preserved; retry with a larger output limit."

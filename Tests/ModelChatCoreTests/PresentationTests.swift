@@ -16,10 +16,45 @@ import Testing
     try stream.validateCompletion()
 }
 
-@Test func reasoningOnlyIsNotAcceptedAsAFinalAnswer() throws {
+@Test func reasoningOnlyAtOutputLimitHasActionableError() throws {
     var stream = OpenAIStreamState()
     _ = try stream.consume(#"{"choices":[{"index":0,"delta":{"reasoning_content":"Still thinking"},"finish_reason":"length"}]}"#)
+    _ = try stream.consume("[DONE]")
+    #expect(throws: EndpointSessionError.outputLimitReached) { try stream.validateCompletion() }
+    #expect(stream.answer.isEmpty)
+    let message = EndpointSessionError.outputLimitReached.localizedDescription
+    #expect(message.contains("Reasoning uses the same output budget"))
+    #expect(message.contains("/set max-tokens"))
+    #expect(message.contains("/retry"))
+}
+
+@Test(arguments: ["", " \n\t"])
+func emptyOutputAtLimitDoesNotRequireVisibleReasoning(content: String) throws {
+    var stream = OpenAIStreamState()
+    let chunk = ChatCompletionChunk(
+        id: "limit", model: "test",
+        choices: [.init(delta: .init(content: content), finishReason: "length")]
+    )
+    _ = try stream.consume(String(decoding: JSONEncoder().encode(chunk), as: UTF8.self))
+    #expect(throws: EndpointSessionError.outputLimitReached) { try stream.validateCompletion() }
+}
+
+@Test(arguments: ["", " \n\t"])
+func emptyNormalCompletionKeepsEmptyResponseError(content: String) throws {
+    var stream = OpenAIStreamState()
+    let chunk = ChatCompletionChunk(
+        id: "empty", model: "test",
+        choices: [.init(delta: .init(content: content), finishReason: "stop")]
+    )
+    _ = try stream.consume(String(decoding: JSONEncoder().encode(chunk), as: UTF8.self))
     #expect(throws: EndpointSessionError.emptyResponse) { try stream.validateCompletion() }
+}
+
+@Test func partialAnswerAtOutputLimitIsStillAvailable() throws {
+    var stream = OpenAIStreamState()
+    _ = try stream.consume(#"{"choices":[{"index":0,"delta":{"content":"Partial answer"},"finish_reason":"length"}]}"#)
+    try stream.validateCompletion()
+    #expect(stream.answer == "Partial answer")
 }
 
 @Test func effortUsesWireFieldAndDefaultsToOmission() throws {

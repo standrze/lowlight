@@ -48,7 +48,7 @@ def launch(name, context=4096):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 32, 130, 0, 0))
     sessions = root / name
-    proc = subprocess.Popen([str(Path(sys.argv[1]).resolve()), '--endpoint',
+    proc = subprocess.Popen([str(Path(sys.argv[1]).resolve()), '--api', 'chat-completions', '--endpoint',
         f'http://127.0.0.1:{server.server_port}/v1', '--model', 'test',
         '--context-window', str(context), '--sessions-directory', str(sessions),
         '--config', str(root / 'settings.json')], stdin=slave, stdout=slave, stderr=slave,

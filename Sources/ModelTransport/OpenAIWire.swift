@@ -62,17 +62,26 @@ public struct ChatCompletionRequest: Codable, Equatable, Sendable {
 }
 
 public struct OpenAIUsage: Codable, Equatable, Sendable {
+    public struct PromptTokensDetails: Codable, Equatable, Sendable {
+        public let cachedTokens: Int
+        enum CodingKeys: String, CodingKey { case cachedTokens = "cached_tokens" }
+    }
+    public let promptTokensDetails: PromptTokensDetails?
+    public var cachedTokens: Int { min(promptTokens, max(0, promptTokensDetails?.cachedTokens ?? 0)) }
+
     public let promptTokens: Int
     public let completionTokens: Int
     public let totalTokens: Int
 
-    public init(promptTokens: Int, completionTokens: Int, totalTokens: Int) {
+    public init(promptTokens: Int, completionTokens: Int, totalTokens: Int, cachedTokens: Int? = nil) {
+        self.promptTokensDetails = cachedTokens.map { .init(cachedTokens: min(promptTokens, max(0, $0))) }
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.totalTokens = totalTokens
     }
 
     enum CodingKeys: String, CodingKey {
+        case promptTokensDetails = "prompt_tokens_details"
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case totalTokens = "total_tokens"
@@ -185,10 +194,24 @@ public struct OpenAIErrorEnvelope: Codable, Equatable, Sendable {
     public struct Detail: Codable, Equatable, Sendable {
         public let message: String
         public let type: String
+        public let code: String?
+        public let param: String?
 
-        public init(message: String, type: String = "server_error") {
+        public init(message: String, type: String = "server_error", code: String? = nil, param: String? = nil) {
             self.message = message
             self.type = type
+            self.code = code
+            self.param = param
+        }
+
+        enum CodingKeys: String, CodingKey { case message, type, code, param }
+
+        public init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            message = try values.decode(String.self, forKey: .message)
+            type = try values.decodeIfPresent(String.self, forKey: .type) ?? "server_error"
+            code = try values.decodeIfPresent(String.self, forKey: .code)
+            param = try values.decodeIfPresent(String.self, forKey: .param)
         }
     }
 
@@ -276,60 +299,22 @@ public struct OpenAISpeechRequest: Codable, Equatable, Sendable {
 
 public enum OpenAIEndpoint {
     public static func chatCompletionsURL(from base: String) throws -> URL {
-        let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard var components = URLComponents(string: trimmed),
-              components.scheme != nil,
-              components.host != nil
-        else {
-            throw OpenAIEndpointError.invalidURL(base)
-        }
+        try endpointURL(from: base, resource: "chat/completions")
+    }
 
-        let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if path.hasSuffix("chat/completions") {
-            // The caller supplied the complete endpoint.
-        } else if path.hasSuffix("v1") {
-            components.path = "/\(path)/chat/completions"
-        } else if path.isEmpty {
-            components.path = "/v1/chat/completions"
-        } else {
-            components.path = "/\(path)/v1/chat/completions"
-        }
-
-        guard let url = components.url else {
-            throw OpenAIEndpointError.invalidURL(base)
-        }
-        return url
+    public static func responsesURL(from base: String) throws -> URL {
+        try endpointURL(from: base, resource: "responses")
     }
 
     public static func modelsURL(from base: String) throws -> URL {
-        let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard var components = URLComponents(string: trimmed),
-              components.scheme != nil,
-              components.host != nil
-        else {
-            throw OpenAIEndpointError.invalidURL(base)
-        }
-
-        var path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if path.hasSuffix("chat/completions") {
-            path.removeLast("chat/completions".count)
-            path = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        }
-        if path.hasSuffix("v1") {
-            components.path = "/\(path)/models"
-        } else if path.isEmpty {
-            components.path = "/v1/models"
-        } else {
-            components.path = "/\(path)/v1/models"
-        }
-
-        guard let url = components.url else {
-            throw OpenAIEndpointError.invalidURL(base)
-        }
-        return url
+        try endpointURL(from: base, resource: "models")
     }
 
     public static func speechURL(from base: String) throws -> URL {
+        try endpointURL(from: base, resource: "audio/speech")
+    }
+
+    private static func endpointURL(from base: String, resource: String) throws -> URL {
         let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var components = URLComponents(string: trimmed),
               components.scheme != nil,
@@ -339,17 +324,26 @@ public enum OpenAIEndpoint {
         }
 
         var path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        for suffix in ["chat/completions", "audio/speech", "models"] where path.hasSuffix(suffix) {
+        if path == resource || path.hasSuffix("/" + resource) {
+            guard let url = components.url else { throw OpenAIEndpointError.invalidURL(base) }
+            return url
+        }
+        var suppliedResource = false
+        for suffix in ["chat/completions", "audio/speech", "models", "responses"]
+        where path == suffix || path.hasSuffix("/" + suffix) {
             path.removeLast(suffix.count)
             path = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            suppliedResource = true
             break
         }
-        if path.hasSuffix("v1") {
-            components.path = "/\(path)/audio/speech"
+        if suppliedResource {
+            components.path = path.isEmpty ? "/\(resource)" : "/\(path)/\(resource)"
+        } else if path == "v1" || path.hasSuffix("/v1") {
+            components.path = "/\(path)/\(resource)"
         } else if path.isEmpty {
-            components.path = "/v1/audio/speech"
+            components.path = "/v1/\(resource)"
         } else {
-            components.path = "/\(path)/v1/audio/speech"
+            components.path = "/\(path)/v1/\(resource)"
         }
 
         guard let url = components.url else {

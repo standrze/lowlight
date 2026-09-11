@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION=v0.1.0-beta.1
+VERSION=v0.1.0-beta.2
 REPOSITORY=standrze/lowlight
 PREFIX="${HOME:?HOME must be set}/.lowlight"
 UPDATE_PATH=true

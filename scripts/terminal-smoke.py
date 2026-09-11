@@ -32,7 +32,7 @@ binary=str(pathlib.Path(sys.argv[1]).resolve()) if len(sys.argv) > 1 else str(pa
 processes=[]; all_output=[]
 def launch(resume=None):
  master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',32,130,0,0))
- args=[binary,'--endpoint','http://127.0.0.1:%d/v1'%server.server_port,'--model','test-one','--context-window','8192','--max-tokens','512','--workspace',str(root),'--sessions-directory',str(sessions)]
+ args=[binary,'--api','chat-completions','--endpoint','http://127.0.0.1:%d/v1'%server.server_port,'--model','test-one','--context-window','8192','--max-tokens','512','--workspace',str(root),'--sessions-directory',str(sessions)]
  if resume: args += ['--resume',resume]
  env=dict(os.environ,TERM='xterm-256color')
  proc=subprocess.Popen(args,stdin=slave,stdout=slave,stderr=slave,env=env,start_new_session=True)

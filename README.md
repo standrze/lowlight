@@ -6,6 +6,8 @@
 
 `lowlight` is a terminal chat client for your models. It connects to Midnight Runner or another OpenAI-compatible server, with streaming answers, saved conversations, editable system prompts, and local skills.
 
+Chat uses OpenAI's Responses API when available, with automatic compatibility for servers that only provide Chat Completions.
+
 The interface uses a one-line `›_ lowlight` logo, your terminal's own background and foreground, and a simple prompt between neutral horizontal rules. One consistent indigo-blue (`#6574CD`) is used for the mark and accents on both light and dark themes; the wordmark uses the terminal's normal text color. `--ascii` provides a `>_ lowlight` fallback. The reusable SwiftTUI component is in `Sources/lowlight/LowlightLogo.swift`.
 
 ## Features
@@ -20,7 +22,7 @@ lowlight connects to a separately managed model server. Skills provide instructi
 
 ## Install a release
 
-The current beta release is **v0.1.0-beta.1**, with builds for:
+The current beta release is **v0.1.0-beta.2**, with builds for:
 
 | Download | Target |
 | --- | --- |
@@ -32,7 +34,7 @@ The release bundles include the Swift runtime where needed; a Swift compiler is 
 This repository is private. Install [GitHub CLI](https://cli.github.com), sign in with `gh auth login`, then run this one line:
 
 ```sh
-(set -o pipefail; gh api 'repos/standrze/lowlight/contents/scripts/install-release.sh?ref=v0.1.0-beta.1' -H 'Accept: application/vnd.github.raw' | bash)
+(set -o pipefail; gh api 'repos/standrze/lowlight/contents/scripts/install-release.sh?ref=v0.1.0-beta.2' -H 'Accept: application/vnd.github.raw' | bash)
 ```
 
 The installer detects your OS and architecture, downloads the matching release, verifies SHA-256, and installs into `~/.lowlight`. It adds `~/.lowlight/bin` to `.zshrc` or `.bashrc`, keeping a backup before editing. Open a new terminal and run `lowlight`.
@@ -85,7 +87,22 @@ To run from source without installing:
 ./run.sh --endpoint http://127.0.0.1:8080/v1 --model your-model-name
 ```
 
+Source runs and installs use optimized release builds by default. For debugging, use `LOWLIGHT_BUILD_CONFIGURATION=debug ./run.sh` or `./install.sh --configuration debug`. Debug builds perform extra layout checks and can become slow in long chats.
+
 With no arguments, the default endpoint is `http://127.0.0.1:8080/v1`. The client queries `GET /v1/models` before creating a session and automatically selects the sole available model. Midnight Runner reports its currently loaded model through this endpoint, so no model name is hardcoded. Discovery runs on launch and reconnect; after changing the loaded model in Runner, use `/connection reconnect`.
+
+The default `--api auto` tries `POST /v1/responses` and falls back to `POST /v1/chat/completions` when the Responses route is unavailable. To select a protocol explicitly, use `--api responses` or `--api chat-completions`, or change it in a running chat with `/set api responses`. Explicit selection reports errors without switching protocols. `/connection` shows the preference and the API used by the current connection.
+
+Responses streams deliver answer text and provider-supplied reasoning as separate events, and report token usage when generation finishes. Successful turns can continue with `previous_response_id`, reducing repeated conversation data sent over HTTP; this does not reduce the model's context or guarantee fewer billed tokens. Lowlight keeps the complete local transcript and manages context as before. An expired or unavailable response ID is retried once using the full active local context. Restoring, editing, compacting, changing instructions, or reconnecting starts from local context. Server response IDs stay in memory and are never written to saved chats or profiles.
+
+For a single prompt from a script, use `lowlight run` to read stdin and return JSON containing the answer, model, and token usage:
+
+```sh
+printf '%s\n' 'Write a Python function that adds two numbers.' | \
+  lowlight run --endpoint http://127.0.0.1:8080/v1 --model your-model-name --api auto
+```
+
+The `run` subcommand defaults to Chat Completions; pass `--api auto` or `--api responses` to use Responses. Inside the Experimental TUI, `/run` still runs a selected command in its terminal.
 
 A saved conversation or settings file can supply a preferred model. If it is no longer available and the server reports exactly one model, lowlight uses that model and preserves the conversation. Explicit `--model` and `/model NAME` selections are honored; an unavailable selection opens the model picker instead of sending a request with a stale name. An empty list asks you to load a model in the server, and multiple models require a selection. If model listing returns 404/405, supply a model name explicitly.
 
@@ -131,7 +148,7 @@ Resume directly at startup:
 
 Saved sessions use version 1 JSON files in `~/.lowlight/sessions/chat`. Override the directory with `--sessions-directory PATH`. Writes are atomic. Invalid or unsupported files remain on disk and are reported by `/sessions`; they do not hide valid conversations. The default store also reads the former `~/.midnight/sessions/chat` and `~/Library/Application Support/Midnight Chat/sessions` locations so existing chats remain resumable; new saves go to `~/.lowlight/sessions/chat`.
 
-Resuming restores the saved model, endpoint, context policy, system prompt, skills, and workspace. Those saved values take precedence over startup settings. Authentication comes from the current environment, and usage totals restart. Interrupted responses remain visible as stopped partial text and are excluded from completed model context. Abrupt process termination can lose text since the last streaming checkpoint.
+Resuming restores the saved model, endpoint, API preference, context policy, system prompt, skills, and workspace. Those saved values take precedence over startup settings. Older saved chats without an API preference use `auto`; their existing version-1 files remain readable. Authentication comes from the current environment, and usage totals restart. Interrupted responses remain visible as stopped partial text and are excluded from completed model context. Abrupt process termination can lose text since the last streaming checkpoint.
 
 ## Files, edits, and search
 
@@ -153,7 +170,7 @@ Pickers use Up/Down, Enter to select, and Escape to cancel. Type to filter. Sess
 
 ## Connection profiles
 
-Configure `/model MODEL`, `/set endpoint-url URL`, `/set context-window TOKENS`, `/set max-tokens TOKENS`, and `/set api-key-env VARIABLE`, then save the combination:
+Configure `/model MODEL`, `/set endpoint-url URL`, `/set api auto|responses|chat-completions`, `/set context-window TOKENS`, `/set max-tokens TOKENS`, and `/set api-key-env VARIABLE`, then save the combination:
 
 ```text
 /profile save local
@@ -165,9 +182,9 @@ Configure `/model MODEL`, `/set endpoint-url URL`, `/set context-window TOKENS`,
 lowlight --profile local
 ```
 
-Explicit startup flags override the profile; profile values override the settings file. Resuming a session restores its own settings and saved authentication-variable name (older sessions use the startup variable).
+Explicit startup flags override the profile; profile values override the settings file. The optional `api` field in a profile and `chat.api` in settings accept `auto`, `responses`, or `chat-completions`. An older profile without this field leaves startup settings unchanged; `/profile use` applies `auto` when it is absent. Resuming a session restores its own settings and saved authentication-variable name (older sessions use the startup variable).
 
-`/model` opens the server's model picker. `/connection` shows endpoint, authentication-variable status, token reserves, and advertised capabilities; `/connection reconnect` refreshes the connection and model list. The client recognizes optional model-list metadata `context_window`, `context_length`, `max_model_len`, and `supported_reasoning_efforts`. Lowlight automatically adopts the selected model’s advertised context window on connection and reconnect, including when resuming an older conversation. Set the window in Midnight Model Runner, then use `/connection reconnect` to pick up changes. Local context-window settings are fallbacks only for servers that omit this metadata. Unsupported reasoning effort blocks sending with a corrective message. Missing metadata is labeled unverified.
+`/model` opens the server's model picker. `/connection` shows endpoint, authentication-variable status, token reserves, and advertised capabilities; `/connection reconnect` refreshes the connection and model list. Chat and checkpoint streams allow up to ten minutes without data and thirty minutes overall, to accommodate silent reasoning; Escape/Ctrl-C still cancels immediately. Model discovery retains its short timeout. The client recognizes optional model-list metadata `context_window`, `context_length`, `max_model_len`, and `supported_reasoning_efforts`. Lowlight automatically adopts the selected model’s advertised context window on connection and reconnect, including when resuming an older conversation. Set the window in Midnight Model Runner, then use `/connection reconnect` to pick up changes. Local context-window settings are fallbacks only for servers that omit this metadata. Unsupported reasoning effort blocks sending with a corrective message. Missing metadata is labeled unverified.
 
 ## System prompt and skills
 
@@ -237,6 +254,7 @@ An optional settings file can configure the policy:
 {
   "chat": {
     "endpoint": "http://127.0.0.1:8080/v1",
+    "api": "auto",
     "model": "gemma-4-e2b-it-4bit",
     "maximumTokens": 512,
     "context": {
@@ -256,7 +274,9 @@ Startup overrides include `--max-tokens`, `--context-window`, `--context-safety-
 
 Use `/help` for commands. Enter sends; Ctrl-N adds a newline. Shift-Enter also inserts a newline when the terminal reports that key combination. Up/Down recalls single-line input, and Tab completes slash commands. Page Up pauses automatic transcript following; Ctrl-F toggles following. Escape or Ctrl-C stops active generation or cancels a connection attempt, keeping the chat open. While idle, Ctrl-C displays an exit confirmation; press Ctrl-C again to save and exit, or Escape to cancel. Ctrl-D or `/exit` saves and exits. Up/Down selects slash-menu items while the menu is open.
 
-Use `/effort low`, `/effort medium`, `/effort high`, or `/effort default` to set the provider’s reasoning effort. This is saved with the session; provider support varies. Explicit `reasoning_content` and `reasoning` response fields appear separately under Thinking; Ctrl-T expands or hides them. Unlabeled reasoning embedded in answer text cannot be reliably separated. Assistant messages render bold, italics, headings, and code.
+Use `/effort low`, `/effort medium`, `/effort high`, or `/effort default` to set the provider’s reasoning effort. This is saved with the session; provider support varies. Responses reasoning events and Chat Completions `reasoning_content` or `reasoning` fields appear separately under Thinking; `/thinking on` shows them in muted italic text, `/thinking off` hides them, and Ctrl-T toggles the display. This changes display only; the endpoint must send reasoning. Midnight’s current MLX Generation stream omits GPT-OSS reasoning, so that server supplies answers without visible thinking. Unlabeled reasoning embedded in answer text cannot be reliably separated. Assistant messages render bold, italics, headings, and code.
+
+Reasoning models can spend the entire output allowance thinking before writing an answer. If a turn ends without text, check the output limit in both lowlight and the server. The default is 512 tokens; for models such as GPT-OSS, allow more output in the runner, then use `/set max-tokens 4096` followed by `/retry` in lowlight. Midnight's configured maximum is a hard ceiling, so raising only the client limit can be rejected. For a persistent Midnight limit, set `maximumTokens` in the model folder's `midnight.json` and reload that model. Set `chat.maximumTokens` in lowlight's settings file for new chats; resumed chats retain their saved limit until changed with `/set`.
 
 New responses are instructed to use plain code and useful comments, without emoji badges, smileys, decorative arrows, numbered section comments, or Markdown formatting inside code. These defaults apply alongside your instructions in new and resumed chats. Code fences are hidden by the renderer; code contents are preserved literally so syntax, numeric values, and string data remain intact. Model compliance varies, and explicit requests for Unicode examples or other formatting take precedence.
 
@@ -264,6 +284,7 @@ New responses are instructed to use plain code and useful comments, without emoj
 
 ```text
 /set endpoint-url http://127.0.0.1:8080/v1
+/set api responses
 /set context-window 32768
 ```
 
@@ -286,6 +307,8 @@ Supported formats are `mp3`, `wav`, `flac`, `opus`, `aac`, and `pcm`. The output
 
 Run `swift test` for the core regression suite. After building, run `python3 scripts/terminal-smoke.py /absolute/path/to/lowlight` for the local terminal smoke test. It creates a mock loopback endpoint and temporary sessions, exercises attachment sending, retry/edit, draft recovery, model/session pickers, search, export, archive/restore, and confirmed deletion, and leaves its logs in the printed temporary directory.
 
+Run `python3 scripts/reasoning-smoke.py /absolute/path/to/lowlight` to verify a 65-second silent generation interval, reasoning display controls, italic rendering, and separation of reasoning from answer context using an isolated mock endpoint.
+
 Run `python3 scripts/interrupt-smoke.py /absolute/path/to/lowlight` to verify Ctrl-C during silent and streaming responses, partial-answer preservation, and warning deduplication using a local fixture endpoint.
 
 Run `python3 scripts/model-discovery-smoke.py /absolute/path/to/lowlight` to check automatic model selection, reconnecting after a model change, resuming a chat with a stale model, explicit selections, empty or unsupported model lists, and drafts saved before a model is available. It also uses temporary sessions and a local fixture endpoint.
@@ -293,3 +316,16 @@ Run `python3 scripts/model-discovery-smoke.py /absolute/path/to/lowlight` to che
 ## License
 
 [Apache License 2.0](LICENSE).
+
+### Responses integration check
+
+With an isolated Midnight test server running and a model loaded, run:
+
+```bash
+python3 scripts/responses-smoke.py --binary .build/release/lowlight \
+  --endpoint http://127.0.0.1:18845/v1 --model lowlight-smoke
+```
+
+This exercises the actual terminal client, streamed answers, stored-response continuation, missing-ID recovery and saved-chat resume. It uses temporary settings and sessions, and deletes only responses created during the check. The test prompt asks the model to remember a word, so it requires a text model that can follow that instruction.
+
+Midnight queues overlapping clients automatically. `/usage` shows cached input tokens reported by either the Responses or Chat Completions API. Shared prefix caching needs no client-specific protocol or RAG configuration.

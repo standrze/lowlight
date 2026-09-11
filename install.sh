@@ -9,7 +9,7 @@ Usage: ./install.sh [--configuration debug|release] [--prefix PATH]
 Install a release bundle, or build and install from a source checkout.
 Release bundles install without a Swift toolchain.
 
-  --configuration NAME  Swift build configuration (default: debug).
+  --configuration NAME  Swift build configuration (default: release).
   --binary PATH         Install a prebuilt executable without building.
                         Its SwiftPM resource bundles must be beside it.
   --prefix PATH         Installation home (default: ~/.lowlight).
@@ -115,7 +115,7 @@ is_managed_chat_launcher() {
 PACKAGE_ROOT="$(CDPATH= cd "$(dirname "$0")" && pwd -P)"
 PREFIX="${HOME:?HOME must be set}/.lowlight"
 PREFIX_SET=false
-CONFIGURATION=debug
+CONFIGURATION=release
 CONFIGURATION_SET=false
 BINARY=
 UPDATE_PATH="${LOWLIGHT_MODIFY_PATH:-true}"

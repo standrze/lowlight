@@ -87,6 +87,44 @@ func serverSentEventLinesAreParsedWithoutPrefixWhitespace() {
 }
 
 @Test
+func serverSentEventCompletionAcceptsCRLF() throws {
+    var buffer = SSELineBuffer()
+    var stream = OpenAIStreamState()
+    let events = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n"
+    for line in buffer.append(Data(events.utf8)) {
+        guard let data = EndpointModelSession.sseData(from: line) else { continue }
+        _ = try stream.consume(data)
+    }
+    try stream.validateCompletion()
+    #expect(stream.answer == "Hello")
+    #expect(stream.reachedTerminalEvent)
+}
+
+@Test
+func runnerEmptyGenerationErrorPreservesMessageAndAddsOutputLimitGuidance() throws {
+    var stream = OpenAIStreamState()
+    _ = try stream.consume(#"{"choices":[{"index":0,"delta":{"role":"assistant"}}]}"#)
+    let message = "The model ended the turn without producing text."
+    let envelope = #"{"error":{"message":"The model ended the turn without producing text.","code":"generation_failed","type":"server_error"}}"#
+    #expect(throws: EndpointSessionError.server(message)) { try stream.consume(envelope) }
+    let description = EndpointSessionError.server(message).localizedDescription
+    #expect(description.hasPrefix(message))
+    #expect(description.contains("may be too small"))
+    #expect(description.contains("server and Lowlight"))
+    #expect(description.contains("/set max-tokens 4096"))
+    #expect(description.contains("/retry"))
+}
+
+@Test
+func unrelatedServerErrorKeepsOriginalDescription() throws {
+    var stream = OpenAIStreamState()
+    let message = "The requested model is not loaded."
+    let envelope = #"{"error":{"message":"The requested model is not loaded.","type":"server_error"}}"#
+    #expect(throws: EndpointSessionError.server(message)) { try stream.consume(envelope) }
+    #expect(EndpointSessionError.server(message).localizedDescription == message)
+}
+
+@Test
 func streamEOFWithoutATerminalMarkerIsRejected() throws {
     var state = OpenAIStreamState()
     let content = ChatCompletionChunk(

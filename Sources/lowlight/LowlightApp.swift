@@ -20,6 +20,7 @@ private enum SlashCommand: String, CaseIterable, Identifiable, Sendable {
     case skills = "/skill"
     case compact = "/compact"
     case effort = "/effort"
+    case thinking = "/thinking"
     case attach = "/attach"
     case retry = "/retry"
     case edit = "/edit"
@@ -46,6 +47,7 @@ private enum SlashCommand: String, CaseIterable, Identifiable, Sendable {
         case .skills: "/skill [list|create NAME|use NAME|off NAME|clear]"
         case .compact: "/compact [GUIDANCE]"
         case .effort: "/effort [low|medium|high|default]"
+        case .thinking: "/thinking [on|off]"
         case .attach: "/attach [PATH|list|remove N|clear]"
         case .retry: "/retry [TURN]"
         case .edit: "/edit [TURN]"
@@ -77,6 +79,7 @@ private enum SlashCommand: String, CaseIterable, Identifiable, Sendable {
         case .skills: "Choose skills for this conversation"
         case .compact: "Summarize older context and retain the full transcript"
         case .effort: "Show or change reasoning effort"
+        case .thinking: "Show or hide reasoning supplied by the server"
         case .attach: "Preview and attach text files to the next message"
         case .retry: "Retry an answer in a new branch"
         case .edit: "Edit a previous message in a new branch"
@@ -94,8 +97,15 @@ struct LowlightApp: App, SwiftTUICommand {
     nonisolated static let configuration = CommandConfiguration(
         commandName: "lowlight",
         abstract: "lowlight — a terminal for your models.",
-        version: "0.1.0-beta.1"
+        version: "0.1.0-beta.2",
+        subcommands: [LowlightRunCommand.self]
     )
+
+    nonisolated static func swiftTUIRootSubcommand(
+        forRawArguments arguments: [String]
+    ) throws -> (any ParsableCommand)? {
+        try registeredSubcommand(forRawArguments: arguments)
+    }
 
     @OptionGroup(title: "SwiftTUI Options")
     var swiftTUIOptions: SwiftTUIOptions
@@ -105,6 +115,9 @@ struct LowlightApp: App, SwiftTUICommand {
 
     @Option(name: .shortAndLong, help: "OpenAI-compatible base URL")
     var endpoint: String?
+
+    @Option(name: .long, help: "Chat API: auto, responses, or chat-completions")
+    var api: String?
 
     @Option(name: .long, help: "Named connection profile from ~/.lowlight/config/profiles")
     var profile: String?
@@ -155,6 +168,7 @@ struct LowlightApp: App, SwiftTUICommand {
                 initialModel: settings.model,
                 allowsModelFallback: model == nil && profile == nil,
                 endpoint: settings.endpoint,
+                api: settings.api,
                 apiKeyEnvironment: settings.apiKeyEnvironment,
                 initialEffort: settings.reasoningEffort,
                 maximumTokens: settings.maximumTokens,
@@ -203,12 +217,18 @@ struct LowlightApp: App, SwiftTUICommand {
         if let contextStrategy, ContextStrategy(rawValue: contextStrategy) == nil {
             startupError = "Context strategy must be checkpoint or slidingWindow."
         }
+        let resolvedAPI = api.flatMap(OpenAIAPI.init(rawValue:))
+            ?? selectedProfile?.api ?? fileSettings?.chat?.api ?? .auto
+        if let api, OpenAIAPI(rawValue: api) == nil {
+            startupError = "API must be auto, responses, or chat-completions."
+        }
         let resolvedEndpoint = endpoint ?? selectedProfile?.endpoint ?? fileSettings?.chat?.endpoint ?? "http://127.0.0.1:8080/v1"
         do { try validateChatEndpoint(resolvedEndpoint) }
         catch { startupError = error.localizedDescription }
         return ResolvedChatSettings(
             model: model ?? selectedProfile?.model ?? fileSettings?.chat?.model ?? "",
             endpoint: resolvedEndpoint,
+            api: resolvedAPI,
             apiKeyEnvironment: apiKeyEnv
                 ?? selectedProfile?.apiKeyEnvironment
                 ?? fileSettings?.chat?.apiKeyEnvironment
@@ -240,6 +260,7 @@ struct LowlightApp: App, SwiftTUICommand {
 private struct ResolvedChatSettings {
     let model: String
     let endpoint: String
+    let api: OpenAIAPI
     let apiKeyEnvironment: String
     let maximumTokens: Int
     let contextWindowTokens: Int
@@ -258,7 +279,7 @@ private struct ChatView: View {
     private var palette: LowlightPalette { LowlightPalette(appearance: terminalAppearance) }
 
     private static let slashCommands: [SlashCommand] = [
-        .home, .model, .effort, .system, .skills, .resume, .sessions, .new, .save,
+        .home, .model, .effort, .thinking, .system, .skills, .resume, .sessions, .new, .save,
         .attach, .retry, .edit, .branch, .search, .export, .profile, .connection,
         .compact, .context, .usage, .set, .mode, .clear, .help, .quit
     ]
@@ -357,6 +378,7 @@ private struct ChatView: View {
 
     @State private var allowsModelFallback: Bool
     @State private var endpoint: String
+    @State private var api: OpenAIAPI
     @State private var appMode: AppMode = .chat
     @State private var activeScreen: AgentScreen = .chat
     @State private var screenReturnTarget: AgentScreen = .chat
@@ -449,6 +471,7 @@ private struct ChatView: View {
         initialModel: String,
         allowsModelFallback: Bool,
         endpoint: String,
+        api: OpenAIAPI,
         apiKeyEnvironment: String,
         initialEffort: ReasoningEffort?,
         maximumTokens: Int,
@@ -465,6 +488,7 @@ private struct ChatView: View {
     ) {
         _allowsModelFallback = State(initialValue: allowsModelFallback)
         _endpoint = State(initialValue: endpoint)
+        _api = State(initialValue: api)
         _apiKeyEnvironment = State(initialValue: apiKeyEnvironment)
         _reasoningEffort = State(initialValue: initialEffort)
         _maximumTokens = State(initialValue: maximumTokens)
@@ -1031,7 +1055,7 @@ private struct ChatView: View {
         if phase == .clearing {
             return status
         }
-        return "enter send  ·  ctrl-n newline  ·  ctrl-g screens  ·  ? help"
+        return "enter send  ·  ctrl-n newline  ·  ctrl-g screens  ·  ctrl-t thinking  ·  ? help"
     }
 
     private var availableModelsSummary: String {
@@ -1099,7 +1123,7 @@ private struct ChatView: View {
                     contextWindowTokens = reportedWindow
                 }
                 let connected = try EndpointModelSession(
-                    model: selectedModel, endpoint: endpoint, apiKey: apiKey,
+                    model: selectedModel, endpoint: endpoint, apiKey: apiKey, api: api,
                     maximumTokens: maximumTokens, contextWindowTokens: contextWindowTokens,
                     contextSafetyReserveTokens: contextSafetyReserveTokens,
                     contextCompactAtPercent: contextCompactAtPercent,
@@ -1275,7 +1299,7 @@ private struct ChatView: View {
                 return .invalid(message: "Usage: \(command.usage)")
             }
             return .quit
-        case .new, .save, .sessions, .resume, .system, .skills, .compact, .effort,
+        case .new, .save, .sessions, .resume, .system, .skills, .compact, .effort, .thinking,
              .attach, .retry, .edit, .branch, .search, .export, .profile, .connection:
             return .local(command, argument)
         case .set:
@@ -1564,7 +1588,7 @@ private struct ChatView: View {
             reasoningEffort: reasoningEffort, draft: conversationDraft.isEmpty ? nil : conversationDraft,
             pendingAttachments: pendingAttachments.isEmpty ? nil : pendingAttachments,
             archived: conversationArchived ? true : nil, parentID: parentConversationID,
-            apiKeyEnvironment: apiKeyEnvironment
+            apiKeyEnvironment: apiKeyEnvironment, api: api
         )
     }
 
@@ -1595,6 +1619,15 @@ private struct ChatView: View {
 
     private func handleLocalCommand(_ command: SlashCommand, argument: String?) {
         switch command {
+        case .thinking:
+            if let argument {
+                switch argument.lowercased() {
+                case "on": showThinking = true
+                case "off": showThinking = false
+                default: addCommandNotice("Usage: /thinking on|off"); return
+                }
+            }
+            addCommandNotice("Thinking display: \(showThinking ? "on" : "off"). Use /thinking on|off or Ctrl-T. Reasoning appears only when the server sends it.")
         case .effort:
             guard let argument else {
                 addCommandNotice("Reasoning effort: \(reasoningEffort?.rawValue ?? "default"). Use /effort low|medium|high|default.")
@@ -1623,7 +1656,12 @@ private struct ChatView: View {
         case .profile: manageProfiles(argument)
         case .connection:
             if argument == "reconnect" { loadModel() }
-            else if argument == nil { addCommandNotice(connectionDescription) }
+            else if argument == nil {
+                Task { @MainActor in
+                    let activeAPI = await session?.activeAPI()
+                    addCommandNotice(connectionDescription(activeAPI: activeAPI))
+                }
+            }
             else { addCommandNotice("Usage: /connection [reconnect]") }
         case .resume:
             guard let argument else { addCommandNotice("Usage: /resume ID|last"); return }
@@ -1663,6 +1701,7 @@ private struct ChatView: View {
         modelPath = saved.model
         allowsModelFallback = true
         endpoint = saved.endpoint
+        api = saved.api ?? .auto
         workspacePath = saved.workspacePath
         maximumTokens = saved.maximumTokens
         reasoningEffort = saved.reasoningEffort
@@ -1846,7 +1885,7 @@ private struct ChatView: View {
         guard let argument, !argument.isEmpty else {
             clearComposer()
             addCommandNotice(
-                "Settings: endpoint-url=\(endpoint), context-window=\(contextWindowTokens), max-tokens=\(maximumTokens), api-key-env=\(apiKeyEnvironment), "
+                "Settings: endpoint-url=\(endpoint), api=\(api.rawValue), context-window=\(contextWindowTokens), max-tokens=\(maximumTokens), api-key-env=\(apiKeyEnvironment), "
                     + "tts-model=\(ttsModel), voice=\(ttsVoice), audio-format=\(ttsFormat), "
                     + "audio-output-directory=\(audioOutputDirectory)."
             )
@@ -1861,7 +1900,7 @@ private struct ChatView: View {
         guard parts.count == 2 else {
             clearComposer()
             addCommandNotice(
-                "Usage: /set endpoint-url URL | context-window TOKENS | max-tokens TOKENS | api-key-env NAME | "
+                "Usage: /set endpoint-url URL | api auto|responses|chat-completions | context-window TOKENS | max-tokens TOKENS | api-key-env NAME | "
                     + "tts-model MODEL | voice VOICE | audio-format FORMAT | "
                     + "audio-output-directory PATH"
             )
@@ -1872,6 +1911,14 @@ private struct ChatView: View {
         let value = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
         var requiresReconnect = false
         switch name {
+        case "api":
+            guard let selectedAPI = OpenAIAPI(rawValue: value.lowercased()) else {
+                clearComposer()
+                addCommandNotice("API must be auto, responses, or chat-completions.")
+                return
+            }
+            api = selectedAPI
+            requiresReconnect = true
         case "endpoint-url":
             do { try validateChatEndpoint(value) }
             catch {
@@ -2167,7 +2214,7 @@ private struct ChatView: View {
         }
         let requestLabel = snapshot.reportedRequests == 1 ? "request" : "requests"
         return "Last request: \(last.promptTokens) input + \(last.completionTokens) output "
-            + "= \(last.totalTokens) tokens. Session total across \(snapshot.reportedRequests) "
+            + "= \(last.totalTokens) tokens (\(last.cachedTokens) input tokens cached). Session total across \(snapshot.reportedRequests) "
             + "reported \(requestLabel): \(snapshot.promptTokens) input + "
             + "\(snapshot.completionTokens) output = \(snapshot.totalTokens) tokens. "
             + "Configured context window: \(snapshot.contextWindowTokens)."
@@ -2404,12 +2451,15 @@ private struct ChatView: View {
         selectedModelInfo?.settingIssues(contextWindow: contextWindowTokens, effort: reasoningEffort) ?? []
     }
 
-    private var connectionDescription: String {
+    private func connectionDescription(activeAPI: OpenAIAPI?) -> String {
         let keySet = !(apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         let reportedWindow = selectedModelInfo?.contextWindow.map(String.init) ?? "not advertised (unverified)"
         let efforts = selectedModelInfo?.supportedReasoningEfforts.map { $0.isEmpty ? "none" : $0.joined(separator: ", ") }
             ?? "not advertised (unverified)"
+        let activeAPILabel = activeAPI.map { $0 == .auto ? "selected on first request" : $0.rawValue }
+            ?? "not connected"
         return "Endpoint: \(endpoint)\nModel: \(modelName)\nAuthentication: \(apiKeyEnvironment) is \(keySet ? "set" : "not set")"
+            + "\nAPI preference: \(api.rawValue)\nActive API: \(activeAPILabel)"
             + "\nConfigured context: \(contextWindowTokens); output reserve: \(maximumTokens); safety: \(contextSafetyReserveTokens)"
             + "\nServer-reported context: \(reportedWindow)\nServer-reported efforts: \(efforts)"
             + "\nSelected effort: \(reasoningEffort?.rawValue ?? "default")\n\(availableModelsSummary)"
@@ -2434,7 +2484,7 @@ private struct ChatView: View {
                 let profile = ConnectionProfile(name: parts[1], endpoint: endpoint, model: selectedModel,
                     apiKeyEnvironment: apiKeyEnvironment, contextWindow: contextWindowTokens,
                     maximumTokens: maximumTokens, safetyReserve: contextSafetyReserveTokens,
-                    compactAtPercent: contextCompactAtPercent, reasoningEffort: reasoningEffort)
+                    compactAtPercent: contextCompactAtPercent, reasoningEffort: reasoningEffort, api: api)
                 try ConnectionProfileStore().save(profile)
                 addCommandNotice("Saved profile \(profile.name). Launch with lowlight --profile \(profile.name). Authentication remains in \(apiKeyEnvironment).")
             } else if parts.count == 2, parts[0] == "use" { useProfile(parts[1]) }
@@ -2446,6 +2496,7 @@ private struct ChatView: View {
         do {
             let profile = try ConnectionProfileStore().load(name)
             endpoint = profile.endpoint; modelPath = profile.model; allowsModelFallback = false
+            api = profile.api ?? .auto
             apiKeyEnvironment = profile.apiKeyEnvironment; contextWindowTokens = profile.contextWindow
             maximumTokens = profile.maximumTokens; contextSafetyReserveTokens = profile.safetyReserve
             contextCompactAtPercent = profile.compactAtPercent; reasoningEffort = profile.reasoningEffort
